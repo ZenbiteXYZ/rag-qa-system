@@ -43,7 +43,7 @@ Date of all records below: 2026-10-14.
 - **Status:** Proposed
 - **Context:** The corpus needs Markdown, real version differences, and usable metadata. The author delegated the choice.
 - **Decision:** `kubernetes/website`, `content/en/docs`, license CC BY 4.0. Take 2 or 3 `release-1.xx` branches (branches 1.30 to 1.36 exist at the time of writing). Use a subset such as `concepts/` and `tasks/`, English only. Front matter provides `title`, `content_type` (concept, task, tutorial, reference), `reviewers` and `weight`.
-- **Consequences:** Attribution is required. Whether `reviewers` can serve as `author` is unverified (see ADR-0007). To be confirmed before building the golden set.
+- **Consequences:** Attribution is required. The corpus has no reliable author field, so author metadata is synthetic where absent (see ADR-0007). To be confirmed before building the golden set.
 
 ## ADR-0007: Metadata schema
 
@@ -53,7 +53,7 @@ Date of all records below: 2026-10-14.
   - Document level: `doc_type`, `tags`, `author`, `doc_date` (date stated by the content), `uploaded_at`, `language`.
   - Chunk level: `section_path` (heading hierarchy), position.
   - System filters, not available to Self-Query: `version`, `is_latest`.
-- **Consequences:** The `author` field may be sparse in the chosen corpus (`reviewers` is missing in many files). Fallbacks: derive an author from git history per file, or use `reviewers` and rename the field.
+- **Consequences:** The field stays named `author`. The chosen corpus has no reliable author, so where it is absent, synthetic metadata is assigned from a versioned mapping file to test filters and Self-Query. Questions that rely on author filters are therefore synthetic-metadata tests, not tests on natural cues in the content.
 
 ## ADR-0008: Self-Query filter value validation
 
@@ -67,7 +67,7 @@ Date of all records below: 2026-10-14.
 - **Status:** Accepted
 - **Context:** Embeddings are called on every chunk and every query, so local inference saves cost. LLM quality matters for rewriting, HyDE, Self-Query parsing and generation.
 - **Decision:** Embedding model and LLM are selected in config files. Embeddings run locally, the LLM is called through an API. Model names and versions are logged per run.
-- **Consequences:** Changing the embedding model requires re-indexing (vector dimensions and semantics change), so the model name is stored with the index. Specific models are still to be chosen.
+- **Consequences:** Changing the embedding model requires re-indexing (vector dimensions and semantics change), so the model name is stored with the index. The base embedding model is `Snowflake/snowflake-arctic-embed-m-v2.0` (ADR-0012). LLM models are chosen per stage in the LiteLLM proxy config (ADR-0016).
 
 ## ADR-0010: Pipeline shape: fixed sequence of stages
 
@@ -75,3 +75,60 @@ Date of all records below: 2026-10-14.
 - **Context:** An agent that chooses its own tool calls is flexible, but a metric change could then come from a different tool path and not from the technique being tested.
 - **Decision:** The query pipeline is a fixed sequence of stages, and each technique is switched by config. Wrapping the pipeline as an agent tool is a later experiment.
 - **Consequences:** Effects of single techniques can be attributed, and runs are more repeatable. Less adaptive behavior on complex questions until multi-query or decomposition (story D6) is added as another stage.
+
+## ADR-0011: Ingestion job transport: RabbitMQ
+
+- **Status:** Accepted
+- **Context:** The API must hand ingestion work to a separate worker (story F1). Considered: Postgres as a queue (`SELECT ... FOR UPDATE SKIP LOCKED`), Redis with Arq or Celery, RabbitMQ, Kafka. Kafka was rejected as overkill. The author chose RabbitMQ, partly to practice with a real broker.
+- **Decision:** RabbitMQ carries ingestion jobs from the API to the worker. Job status (queued, parsing, chunking, embedding, ready, failed, dead) stays in Postgres for story A2. Failed jobs go to a dead-letter queue after 3 retries with backoff. Permanent errors (unparseable file) skip retries.
+- **Consequences:** Publishing and the Postgres commit are two writes, so a republisher re-sends jobs stuck in `queued` past a timeout (or an outbox table is used). Delivery is at-least-once, so consumers must be idempotent (see ADR-0014). Ack only after work completes, prefetch 1, and check the consumer ack timeout against the slowest ingestion. Delayed retries need TTL queues or a delay plugin (verify in the docs). The Python client library is `aio-pika` (asyncio, direct control over acks, prefetch and dead-letter exchanges). CPU-bound parsing in the worker runs in an executor. One more container in Compose.
+
+## ADR-0012: Embedder runs as a separate service
+
+- **Status:** Accepted
+- **Context:** Embeddings are needed at ingestion (worker) and at query time (API: the query and the HyDE text). Loading the model in both processes duplicates memory and risks a silent model version mismatch between index and query.
+- **Decision:** One embedding service is called by both API and worker, behind an `Embedder` interface. An in-process implementation of the same interface is available for development and tests. The server is Hugging Face Text Embeddings Inference (TEI), which does token-based dynamic batching and runs on CPU. The base model is `Snowflake/snowflake-arctic-embed-m-v2.0` (see ADR-0009). Per its model card: 768 dimensions, context window up to 8192 tokens, 74 languages, Apache-2.0 license, Matryoshka (MRL) support with 256 dimensions. Other models can be added as separate indexes and compared (ADR-0013).
+- **Consequences:** One model for index and query by construction, and the API stays light. One more container and a network hop on every query. The embedder's model name is part of the index identity (ADR-0013). Many embedding models need different prefixes for queries and passages, so the `Embedder` interface must distinguish the two. For the base model, queries get the prefix `query: ` and documents get none. Who applies the prefix (our client or TEI) is to be checked in the TEI docs.
+
+## ADR-0013: Qdrant layout: one collection per index config
+
+- **Status:** Accepted
+- **Context:** Vector size is fixed per collection and differs by embedding model. Mixing chunking strategies in one collection mixes their results and confounds chunking experiments (story D1).
+- **Decision:** One Qdrant collection per index config, defined as (embedding model, chunking strategy and params), named like `chunks_<embedder>_<chunker>_<params>`. The user chooses the target index at upload, and a query selects the index to search. The same document version may be built in several indexes, tracked in a version-to-index build table with its own status.
+  - Payload: `document_id`, `version`, `is_latest`, `doc_type`, `tags`, `author`, `doc_date`, `language`, `section_path`, `chunk_index`, `text`.
+  - Point id: deterministic UUID v5 from (version id, index, chunk index).
+  - Payload indexes on every filtered field (verify the details in the Qdrant docs).
+- **Consequences:** Strategy comparison means ingesting the same corpus into several indexes (more storage and embedding time). Changing the embedding model creates a new index and does not modify an existing one. Deterministic ids make retried upserts overwrite instead of duplicating.
+
+## ADR-0014: Consistency between Postgres and Qdrant: ordered steps with compensation
+
+- **Status:** Accepted
+- **Context:** No transaction spans Postgres and Qdrant, so a unit of work protects only the Postgres side. Default queries filter on `is_latest`, which lets us hide unfinished work. Postgres is the source of truth for which version is latest (`documents.latest_version_id`). The Qdrant `is_latest` payload is a denormalized copy kept for fast filtering.
+- **Decision:** Ingestion runs in this order:
+  1. Write vectors with `is_latest=false`. Default queries cannot see them.
+  2. In one Postgres transaction: mark the version ready, move `latest_version_id`, finish the job.
+  3. Set `is_latest=true` on the new version's points, then `false` on the old version's points. A brief overlap is preferred over a gap.
+
+  Failure at step 1 or 2: delete points by `version_id` and mark the job failed, or retry (idempotent). Failure at step 3: retry. A reconciler repairs any mismatch between the two stores. Deletion marks the document deleted in Postgres first (hidden), then deletes vectors by filter, then raw files, all idempotent, and keeps a tombstone row (stories A3, A6).
+- **Consequences:** Short windows of eventual consistency, in which a query may briefly see both versions of a document. Every step must be idempotent. A reconciler job and an invariant check (exactly one latest version per document in both stores) are needed.
+
+## ADR-0015: Traces and evaluation runs are logged in MLflow
+
+- **Status:** Accepted
+- **Context:** Story D7 needs per-request traces with stage inputs, outputs, retrieved chunks, prompts, latency and token cost. The eval runner must read retrieved chunk ids per question programmatically. MLflow Tracing records inputs, outputs, latency and token usage per step, is OpenTelemetry-compatible, has async logging, and supports search through `mlflow.search_traces`. A SQL-backed store (PostgreSQL is supported) gives the full search syntax. MLflow is also already in the author's stack.
+- **Decision:** MLflow is the store for request traces (one span per pipeline stage) and for evaluation runs (pipeline config as params, metrics, report and golden set version as artifacts). The MLflow server uses a separate database in the existing Postgres, and a volume for artifacts. The API uses the lightweight `mlflow-tracing` package with async logging. The trace id returned by `POST /query` is the MLflow trace id. Prometheus and Grafana for operational metrics (RPS, failure rate) are deferred and optional.
+- **Consequences:** One more container. The MLflow version must be pinned, since the search result schema differs between 2.x and 3.x. Limits on span payload size were not found in the docs I read, so test early with a realistic prompt and chunk list. MLflow is not an operational metrics system.
+
+## ADR-0016: LLM access through a LiteLLM proxy
+
+- **Status:** Accepted
+- **Context:** ADR-0009 requires configurable models, and different stages (rewriting, Self-Query parsing, HyDE, generation) may want different models or providers. Provider SDKs differ in API shape.
+- **Decision:** Run LiteLLM as a proxy server. The API talks to it through an OpenAI-compatible API, and model names in the pipeline config are aliases defined in the proxy config. Provider keys live only in the proxy's environment.
+- **Consequences:** One more container. Switching a stage to another model or provider is a config change, and the application has a single client implementation. Provider keys stay out of the API code and config. The proxy's logging and any MLflow integration are to be checked in the docs before relying on them (ADR-0015 traces come from the API's own spans).
+
+## ADR-0017: Raw uploaded files on a shared volume
+
+- **Status:** Accepted
+- **Context:** The API stores uploaded files and the worker reads them for ingestion, so both need access to the same storage. Considered: a Docker volume and an S3-compatible store such as MinIO.
+- **Decision:** A Docker volume mounted into both API and worker. File access goes through a `files/` storage module, so the backend can be swapped later.
+- **Consequences:** No extra service. Not suited to running API and worker on different hosts. Moving to an object store later means a new implementation of the `files/` module and a migration of existing files.
