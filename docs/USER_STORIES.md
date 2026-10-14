@@ -31,9 +31,10 @@ Priority: M = must (MVP), S = should, C = could.
 |----|-------|---------------------|---|
 | A1 | As a Reader, I upload a document so that I can ask questions about it. | `.md` and `.docx` accepted, everything else (including PDF) rejected with a clear error. Upload returns a document id and an ingestion status. | M |
 | A2 | As a Reader, I see the ingestion status of a document. | States: queued, parsing, chunking, embedding, ready, failed (with reason). | M |
-| A3 | As a Reader, I list and delete my documents. | Deleting removes the document, its versions and its vectors. | M |
+| A3 | As a Reader, I list and delete my documents. | Deleting removes the document's versions, raw files and vectors. A tombstone record (id, title, deletion date) stays in the registry. Deleted documents are not returned by the default list. | M |
 | A4 | As a Reader, I attach metadata (title, tags, author, date) to a document. | Metadata is stored and filterable at query time. | S |
 | A5 | As a Reader, I upload a batch of files at once. | Each file gets its own status, one failure does not block the others. | C |
+| A6 | As a Reader, when I ask about a document that was deleted, I am told it existed and was deleted. | If a question names a document that resolves to a tombstone (title matched through the known-values check of ADR-0008), the response states the document title and deletion date and does not answer from other documents as if it were still available. A deleted document's content is never retrieved. | C |
 
 ### Epic B: Versioning
 | ID | Story | Acceptance criteria | P |
@@ -78,5 +79,3 @@ Priority: M = must (MVP), S = should, C = could.
 | F1 | As the author, ingestion runs asynchronously. | Upload returns immediately, a worker processes the document. | M |
 | F2 | As the author, configs live in files and runs are reproducible. | Seeds, model names, and library versions are logged per run. | M |
 | F3 | As the author, I run everything with one command. | Docker Compose brings up API, worker, Qdrant and Postgres. | M |
-
-User flows are in [USER_FLOWS.md](USER_FLOWS.md). Architecture decisions are in [ADR.md](ADR.md).

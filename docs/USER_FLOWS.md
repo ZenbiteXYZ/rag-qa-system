@@ -21,7 +21,7 @@ Edge cases: duplicate hash, empty or unparseable file, oversized file, embedding
 
 ### Flow 3: Ask a question (default pipeline)
 1. The user submits a question, optionally with filters (documents, tags, version) and a pipeline config.
-2. Optional pre-retrieval steps run in a configured order: query rewriting, Self-Query (extract filters), HyDE (generate hypothetical document).
+2. Optional pre-retrieval steps run in a configured order: query rewriting, Self-Query (extract filters), HyDE (generate hypothetical document). If Self-Query resolves a document name to a tombstone, the pipeline stops here and responds that the document was deleted on its deletion date (Flow 7).
 3. Retrieval: embed the query (or the hypothetical document), search the vector store with filters, optionally merge with BM25, optionally rerank.
 4. Context assembly: select top chunks, expand with neighbors or parent chunk if the strategy requires it, fit into the token budget.
 5. Generation: the LLM answers only from the context and returns citations. If the context is insufficient, it says so.
@@ -41,3 +41,12 @@ Edge cases: duplicate hash, empty or unparseable file, oversized file, embedding
 2. The runner executes every question for each config, over several seeds where generation is involved.
 3. The system computes retrieval metrics and answer metrics and writes a report with the baseline first.
 4. The Experimenter compares reports and decides what to keep.
+
+### Flow 7: Delete a document
+1. The user requests deletion of a document.
+2. The system marks the document as deleted in the registry (deletion date set). From this moment the document is hidden from lists and its chunks are excluded from retrieval.
+3. The system deletes the document's vectors from every index, then its raw files.
+4. The registry keeps a tombstone (document id, title, deletion date) and removes versions and metadata. Each step is safe to retry.
+5. Later, a question that names the deleted document gets a response saying it was deleted on that date (story A6, Flow 3 step 2).
+
+Edge cases: deletion fails halfway (retry resumes from the marked-deleted state), a new upload with the same title (a new document, the tombstone stays), a version upload racing with deletion (rejected for a deleted document).
