@@ -78,7 +78,7 @@ Draft tables and key columns. Exact types and constraints are **TODO(author)**.
 |-------|-------------|
 | `documents` | `id`, `title`, `latest_version_id`, `created_at`, `deleted_at` |
 | `versions` | `id`, `document_id`, `number`, `content_hash`, `raw_path`, `size_bytes`, `uploaded_at`, `metadata` (JSONB: `doc_type`, `tags`, `author`, `doc_date`, `language`) |
-| `indexes` | `name`, `embedder`, `chunker`, `params` (JSONB), `vector_size` |
+| `indexes` | `name`, `embedder`, `chunker`, `params` (JSONB), `vector_size`, `sparse` (`bm25`) |
 | `version_index_builds` | `version_id`, `index_name`, `status`, `chunk_count`, `built_at` |
 | `jobs` | `id`, `version_id`, `index_name`, `status`, `attempts`, `error`, `created_at`, `updated_at` |
 
@@ -90,6 +90,7 @@ Draft tables and key columns. Exact types and constraints are **TODO(author)**.
 ### Qdrant (chunks and vectors)
 
 - **One collection per index config** = (embedding model, chunking strategy and params), named like `chunks_<embedder>_<chunker>_<params>` (ADR-0013). The same document version can be built in several indexes.
+- **Named vectors per point** (ADR-0018): `dense` (size taken from the index's embedder) and sparse `bm25` (BM25 over the chunk text, IDF modifier on the sparse vector config). Both are defined when the collection is created, even if an index is queried in dense mode only.
 - **Payload:** `document_id`, `version`, `is_latest`, `doc_type`, `tags`, `author`, `doc_date`, `language`, `section_path`, `chunk_index`, `text`.
 - **Point id:** deterministic UUID v5 from (version id, index, chunk index), so retried upserts overwrite.
 - **Payload indexes** on every filtered field (verify the exact setup in the Qdrant docs).
@@ -122,6 +123,7 @@ Runs in the worker. A job is delivered through RabbitMQ and processed in stages,
 - **Parsers** for `.md` and `.docx` produce the same `ParsedDocument` (front matter metadata, sections with heading paths), so later stages do not care about the format (ADR-0001).
 - **Chunker** is the swappable stage. The strategy belongs to the index, chosen at upload by selecting the target index (ADR-0013).
 - **Embedder** is called over HTTP in batches (ADR-0012). TEI also batches dynamically on the server side across concurrent requests. Many models need different prefixes for queries and passages, so the `Embedder` interface has separate query and passage methods.
+- **Upsert** writes the dense vector from the embedder and the BM25 sparse vector for the same chunk text (ADR-0018). Qdrant computes the BM25 sparse vector itself from the chunk text (a `Document` with model `Qdrant/bm25`, available on self-hosted instances per the docs), so `EmbeddedChunk` stays dense only and TEI is not involved.
 - Field-level definitions of `ParsedDocument`, `Chunk` and `EmbeddedChunk`: **TODO(author)**.
 
 **Retry and failure policy** (ADR-0011):
@@ -135,12 +137,18 @@ Runs in the worker. A job is delivered through RabbitMQ and processed in stages,
 
 A fixed sequence of stages, each switchable by config (ADR-0010). A stage is one step that takes a shared state object, returns it updated, and writes its own trace entry.
 
-Stages in order: query rewriting, Self-Query, HyDE, retrieve (dense, optionally plus BM25), rerank, context assembly, generate. Each can be turned on or off per request (stories D2 to D6).
+Stages in order: query rewriting, Self-Query, HyDE, retrieve (`dense`, `sparse` or `hybrid`), rerank, context assembly, generate. Each can be turned on or off per request (stories D2 to D6).
 
 TODO(author):
 - Fields of the shared `PipelineState` and which stage writes each field.
 - Stage interface (input type, output type).
 - Expected shapes at boundaries: embedding vector size (taken from the index), number of chunks passed between stages, token budget for context.
+
+**Hybrid retrieval** (ADR-0018): one Qdrant query with a `prefetch` branch per vector (`dense` and `bm25`, each with its own limit), merged by Reciprocal Rank Fusion. The text used differs per branch:
+- Dense branch: the HyDE document if present, else the Self-Query semantic query, else the rewritten query, else the question.
+- Sparse branch: the Self-Query semantic query, else the rewritten query, else the question. Never the HyDE text. This is a hypothesis to test on the golden set.
+
+Retrieve config: `mode` (`dense`, `sparse`, `hybrid`), `fusion`, per-branch limit, final `top_k`. The evaluation baseline stays dense only.
 
 **Traces** (ADR-0015): MLflow Tracing, one span per stage, with inputs, outputs, latency and token usage. The trace id returned by `POST /query` is the MLflow trace id. The eval runner reads traces with `mlflow.search_traces`. The API uses the lightweight `mlflow-tracing` package with async logging. Prometheus and Grafana for RPS and failure rates are deferred.
 
