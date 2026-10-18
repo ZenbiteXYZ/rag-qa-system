@@ -87,6 +87,61 @@ Draft tables and key columns. Exact types and constraints are **TODO(author)**.
 - **Known filter values** (for Self-Query validation, ADR-0008) are derived with `SELECT DISTINCT` over latest-version metadata, plus tombstone titles for story A6. No separate synced table.
 - MLflow uses its own database in the same Postgres instance.
 
+Draft entity relationships. Column types are illustrative and the real ones are **TODO(author)**. `documents.latest_version_id` and `versions.document_id` reference each other.
+
+```mermaid
+erDiagram
+    documents ||--o{ versions : has
+    documents |o--o| versions : latest
+    versions ||--o{ version_index_builds : "built in"
+    indexes ||--o{ version_index_builds : contains
+    versions ||--o{ jobs : "processed by"
+    indexes ||--o{ jobs : targets
+
+    documents {
+        id id PK
+        text title
+        id latest_version_id FK
+        ts created_at
+        ts deleted_at
+    }
+    versions {
+        id id PK
+        id document_id FK
+        int number
+        text content_hash
+        text raw_path
+        int size_bytes
+        ts uploaded_at
+        json metadata
+    }
+    indexes {
+        text name PK
+        text embedder
+        text chunker
+        json params
+        int vector_size
+        text sparse
+    }
+    version_index_builds {
+        id version_id FK
+        text index_name FK
+        text status
+        int chunk_count
+        ts built_at
+    }
+    jobs {
+        id id PK
+        id version_id FK
+        text index_name FK
+        text status
+        int attempts
+        text error
+        ts created_at
+        ts updated_at
+    }
+```
+
 ### Qdrant (chunks and vectors)
 
 - **One collection per index config** = (embedding model, chunking strategy and params), named like `chunks_<embedder>_<chunker>_<params>` (ADR-0013). The same document version can be built in several indexes.
@@ -126,6 +181,54 @@ Runs in the worker. A job is delivered through RabbitMQ and processed in stages,
 - **Upsert** writes the dense vector from the embedder and the BM25 sparse vector for the same chunk text (ADR-0018). Qdrant computes the BM25 sparse vector itself from the chunk text (a `Document` with model `Qdrant/bm25`, available on self-hosted instances per the docs), so `EmbeddedChunk` stays dense only and TEI is not involved.
 - Field-level definitions of `ParsedDocument`, `Chunk` and `EmbeddedChunk`: **TODO(author)**.
 
+Ingestion sequence (success path):
+
+```mermaid
+sequenceDiagram
+    actor U as Client
+    participant API
+    participant PG as Postgres
+    participant MQ as RabbitMQ
+    participant W as Worker
+    participant EMB as Embedder (TEI)
+    participant QD as Qdrant
+
+    U->>API: POST /documents (file, metadata, index)
+    API->>API: validate, hash, save raw file
+    API->>PG: insert document, version, job (queued)
+    API->>MQ: publish job
+    API-->>U: 202 document_id, version, job_id
+    MQ->>W: deliver job
+    W->>PG: job status parsing, then chunking, then embedding
+    W->>EMB: embed passages (batches)
+    EMB-->>W: dense vectors
+    W->>QD: upsert chunks (dense vector + text for BM25), is_latest=false
+    W->>PG: one transaction: version ready, latest_version_id, job ready
+    W->>QD: is_latest=true on new version, then false on old version
+    W->>MQ: ack
+```
+
+Job status transitions (retry and dead-letter rules are in the list below):
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    state Processing {
+        [*] --> parsing
+        parsing --> chunking
+        chunking --> embedding
+        embedding --> [*]
+    }
+    queued --> Processing
+    Processing --> ready : success
+    Processing --> queued : transient error, retries left
+    Processing --> failed : permanent error
+    Processing --> dead : retries exhausted
+    dead --> queued : manual requeue
+    ready --> [*]
+    failed --> [*]
+```
+
 **Retry and failure policy** (ADR-0011):
 - Up to 3 retries with exponential backoff for transient errors (embedder or Qdrant unavailable).
 - Permanent errors (unparseable or empty file) fail immediately, no retries.
@@ -149,6 +252,51 @@ TODO(author):
 - Sparse branch: the Self-Query semantic query, else the rewritten query, else the question. Never the HyDE text. This is a hypothesis to test on the golden set.
 
 Retrieve config: `mode` (`dense`, `sparse`, `hybrid`), `fusion`, per-branch limit, final `top_k`. The evaluation baseline stays dense only.
+
+Query sequence (stages in brackets are optional and switched by config):
+
+```mermaid
+sequenceDiagram
+    actor U as Client
+    participant API
+    participant LLM as LiteLLM proxy
+    participant PG as Postgres
+    participant EMB as Embedder (TEI)
+    participant QD as Qdrant
+    participant MLF as MLflow
+
+    U->>API: POST /query (question, index, filters, config)
+    opt rewrite enabled
+        API->>LLM: rewrite question
+        LLM-->>API: rewritten query
+    end
+    opt Self-Query enabled
+        API->>LLM: extract semantic query and filters
+        LLM-->>API: parsed filters
+        API->>PG: validate filter values, check tombstones
+        alt unresolved value
+            API-->>U: needs_clarification (candidates)
+        else document was deleted
+            API-->>U: document_deleted
+        end
+    end
+    opt HyDE enabled
+        API->>LLM: write hypothetical document
+        LLM-->>API: hypothetical document
+    end
+    API->>EMB: embed query text (query prefix)
+    EMB-->>API: dense vector
+    API->>QD: hybrid query (dense + BM25 prefetch, filters, RRF)
+    QD-->>API: candidate chunks
+    opt rerank enabled
+        API->>API: rerank candidates (reranker location not decided)
+    end
+    API->>API: assemble context within token budget
+    API->>LLM: generate answer from context
+    LLM-->>API: answer with citations
+    API-)MLF: trace (async)
+    API-->>U: answer, citations, trace_id
+```
 
 **Traces** (ADR-0015): MLflow Tracing, one span per stage, with inputs, outputs, latency and token usage. The trace id returned by `POST /query` is the MLflow trace id. The eval runner reads traces with `mlflow.search_traces`. The API uses the lightweight `mlflow-tracing` package with async logging. Prometheus and Grafana for RPS and failure rates are deferred.
 
@@ -185,7 +333,7 @@ TODO(author): the exact shape of the pipeline config object, SSE event names and
 - Calls the API over HTTP, so it exercises the real environment. This needs `POST /query` to accept a per-request pipeline config, and uses the `trace_id` to read retrieved chunks from MLflow.
 - Configs and seeds live in YAML under `eval/configs/`. The golden set lives under `eval/golden/` and is versioned in git (ADR-0005).
 - Each run is an MLflow run: pipeline config as params, metrics, and the report and golden set version as artifacts. Reports are generated artifacts, named with config hash and git sha.
-- Repeat runs and report variance. API LLMs are not fully deterministic even at temperature 0.
+- Repeat runs and report variance. API LLMs are not deterministic, and the chosen models do not accept sampling settings.
 - The pipeline stays importable as a package, so stages can be unit tested without HTTP.
 
 ## 7. Project layout
@@ -201,6 +349,7 @@ rag-qa-system/
     storage/      postgres/ (models, repositories, unit of work), qdrant/ (index management, upsert, search), files/
     embeddings/   Embedder interface, in-process and remote implementations
     llm/          LLM client interface, OpenAI-compatible client for the LiteLLM proxy
+    evaluation/   golden-set tooling shared by tests and the eval runner (evidence quote validator)
     settings.py   config loading
   eval/
     golden/       questions (versioned)
