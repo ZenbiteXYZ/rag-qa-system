@@ -1,0 +1,27 @@
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.17.1
+  hooks:
+    # Run the linter.
+    - id: ruff-check
+      types_or: [python, pyi]
+      args: [--fix, --exit-non-zero-on-fix]
+    # Run the formatter.
+    - id: ruff-format
+      types_or: [python, pyi]
+
+- repo: local
+  hooks:
+    - id: mypy
+      name: mypy
+      entry: uv run mypy app/
+      language: system
+      types: [python]
+      pass_filenames: false
+    - id: pytest
+      name: pytest
+      entry: uv run pytest
+      language: system
+      types: [python]
+      pass_filenames: false
+      args: [tests/, -q, --tb=short]
