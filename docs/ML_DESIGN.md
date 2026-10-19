@@ -157,7 +157,7 @@ Before the first judged result is used:
 - Always report the baseline next to every result.
 
 ### Protocol changes
-The evaluation protocol is versioned (`protocol_version` in every report). This document describes version 1. A change to metrics, splits, the golden set, the judge or its rubric creates a new version, is recorded as an ADR, and old results are not mixed with new ones.
+The evaluation protocol is versioned (`protocol_version` in every report). This document describes version 1. A change to metrics, splits, the golden set, the judge or its rubric creates a new version, is recorded as an ADR, and old results are not mixed with new ones. Old runs are not discarded: the run records (section 6) hold the raw outputs, so metrics can be recomputed under the new version and both sets of values are kept.
 
 ## 5. Experiment plan
 
@@ -193,6 +193,24 @@ Identifiers are OpenRouter canonical slugs as listed on 2026-10-18. Both LLMs ar
 | Embedder | Snowflake Arctic Embed M v2.0 | `Snowflake/snowflake-arctic-embed-m-v2.0` at revision `95c2741480856aa9666782eb4afe11959938017f` | Served by TEI. Queries use the prefix `query: `. |
 
 What is random: the dev/test split (fixed seed, stored in the golden set), the synthetic author mapping (fixed seed), and LLM sampling, which cannot be controlled: neither the generator nor the judge accepts a temperature setting through OpenRouter, so runs are repeated (section 4). The judge accepts a `seed`, which is set on a best-effort basis and logged.
+
+### Run records
+Every run stores everything needed to recompute its metrics, so changing a metric definition, a threshold, the judge or the rubric never requires regenerating answers. A run is an immutable MLflow run (ADR-0015).
+
+Stored per run as parameters and tags: the full pipeline config and its hash; the git sha and whether the working tree was dirty; the hash of `uv.lock`; `protocol_version`; the golden set version (a content hash); the version of the metric code; the models and pins in use and the provider that served each call; the index identity (index name, chunker and its parameters); the Qdrant, TEI and LiteLLM image tags; prompt and rubric versions; the repetition index and seeds; start and end time.
+
+Stored per run as artifacts:
+- A snapshot of the golden set file and of the config files used.
+- One record per (question, repetition): question id and split; the output of every pipeline stage (rewritten query, extracted and resolved filters, hypothetical document, retrieved candidates with chunk ids, spans and scores, the ranked list, the final context spans, the final prompt, the answer, citations, outcome and warnings); latency per stage and token counts per LLM call; errors; the trace id.
+- The judge inputs and raw outputs (judge model, rubric version, seed, verdict, tokens).
+- The computed per-question metric values, the aggregates and the report.
+
+Rules:
+1. Metrics are a function of the run records and the golden set only, never of live calls, so they can be recomputed offline.
+2. Runs are never edited or deleted. Recomputing under a new protocol version creates a new run tagged with the run it was computed from, and the old values stay next to the new ones.
+3. Failed requests, degraded stages (an optional stage that fell back) and errors are stored and counted. Nothing is silently dropped.
+4. Runs are compared only if their protocol and golden set versions match. Otherwise recompute from the stored records, or re-run.
+5. The artifact store is the project's record of results. Include it in backups, or export the reports.
 
 ## 7. Risks and failure modes
 

@@ -332,7 +332,7 @@ TODO(author): the exact shape of the pipeline config object, SSE event names and
 
 - Calls the API over HTTP, so it exercises the real environment. This needs `POST /query` to accept a per-request pipeline config, and uses the `trace_id` to read retrieved chunks from MLflow.
 - Configs and seeds live in YAML under `eval/configs/`. The golden set lives under `eval/golden/` and is versioned in git (ADR-0005).
-- Each run is an MLflow run: pipeline config as params, metrics, and the report and golden set version as artifacts. Reports are generated artifacts, named with config hash and git sha.
+- Each run is an MLflow run: pipeline config as params, metrics, and the report and golden set version as artifacts, together with the raw per-question outputs that metrics are computed from (ML_DESIGN section 6, run records). Reports are generated artifacts, named with config hash and git sha.
 - Repeat runs and report variance. API LLMs are not deterministic, and the chosen models do not accept sampling settings.
 - The pipeline stays importable as a package, so stages can be unit tested without HTTP.
 
