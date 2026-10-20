@@ -35,8 +35,19 @@ Versioning is also behavior to test: a question whose answer differs between two
 ## 3. Data
 
 ### Corpus
-- Kubernetes docs, `content/en/docs` subset (`concepts/`, `tasks/`), taken from 2 or 3 release branches (ADR-0006). Licence CC BY 4.0, so attribution is needed in any public report.
-- Counts of documents, chunks and tokens per version are recorded in the report of the first ingestion.
+- Kubernetes docs, `content/en/docs` subset (`concepts/`, `tasks/`), English, three releases: `release-1.32`, `release-1.34` and `release-1.36` (ADR-0006). Licence CC BY 4.0, so attribution is needed in any public report.
+- Pages after preparation: 342 (1.32), 355 (1.34) and 377 (1.36), about 3.1 to 3.4 million characters per release, with 3,200 to 3,400 code blocks. Chunk and token counts are recorded in the report of the first ingestion.
+- **Location:** `~/data/corpora/kubernetes/`, outside the repository, on the encrypted disk, owner-only and read-only. `raw/` holds sparse checkouts of the source (the exact commits are in each `MANIFEST.json` and in `ATTRIBUTION.md`), `corpus/` the prepared pages that the validator and ingestion read (`RAGQA_CORPUS_DIR`).
+- **Pinned sources.** The manifests are committed in `eval/corpus/<release>.json` (commit, counts and a SHA-256 of every prepared file), so the repository itself records exactly what the golden set refers to, and a rebuild can be verified byte for byte.
+
+  | Release | Upstream commit | Pages |
+  |---------|-----------------|-------|
+  | release-1.32 | `a6b9d383dfe5cba5d846d3f05475c6cc25f3d2d7` | 342 |
+  | release-1.34 | `47132eb5367cfdcba0a3b33a0b3ffc81185bd7e8` | 355 |
+  | release-1.36 | `1de955ebabe7e17da1ebb4f582635491227f4157` | 377 |
+
+- **Preparation:** the site renders Hugo shortcodes, so a plain Markdown parser would miss code samples, includes, section headings such as "What's next", feature states and version numbers. `ragqa.evaluation.corpus` renders them the way the site's templates do (per release, because templates and strings differ between releases) and writes plain Markdown. Pages that are only a front matter stub are skipped. Shortcodes without a rule are dropped and counted in the manifest: `api-reference`, `thirdparty-content`, `legacy-repos-deprecation`, `link`, `pageinfo` and `relref`.
+- **Rebuild:** per release, `git clone --depth 1 --branch release-1.34 --filter=blob:none --sparse https://github.com/kubernetes/website.git raw/release-1.34`, then `git sparse-checkout set content/en/docs/concepts content/en/docs/tasks content/en/docs/reference/glossary content/en/docs/reference/command-line-tools-reference/feature-gates content/en/examples content/en/includes i18n/en data/releases`, then `python -m ragqa.evaluation.corpus --raw raw --out corpus --versions release-1.34`. The step refuses to overwrite an existing release folder, and it fails if an include or example file is missing.
 - The corpus is public and almost certainly seen by the LLMs during pretraining. See "closed-book control" in section 7.
 
 ### Metadata

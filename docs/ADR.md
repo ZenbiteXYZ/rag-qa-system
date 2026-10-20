@@ -40,10 +40,10 @@ Date of all records below: 2026-10-14.
 
 ## ADR-0006: Evaluation corpus: Kubernetes docs
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Context:** The corpus needs Markdown, real version differences, and usable metadata. The author delegated the choice.
-- **Decision:** `kubernetes/website`, `content/en/docs`, license CC BY 4.0. Take 2 or 3 `release-1.xx` branches (branches 1.30 to 1.36 exist at the time of writing). Use a subset such as `concepts/` and `tasks/`, English only. Front matter provides `title`, `content_type` (concept, task, tutorial, reference), `reviewers` and `weight`.
-- **Consequences:** Attribution is required. The corpus has no reliable author field, so author metadata is synthetic where absent (see ADR-0007). To be confirmed before building the golden set.
+- **Decision:** `kubernetes/website`, `content/en/docs`, license CC BY 4.0. Three release branches, `release-1.32`, `release-1.34` and `release-1.36`, two releases apart so that version-sensitive questions have real differences. Use a subset such as `concepts/` and `tasks/`, English only. Front matter provides `title`, `content_type` (concept, task, tutorial, reference), `reviewers` and `weight`.
+- **Consequences:** Attribution is required. The corpus has no reliable author field, so author metadata is synthetic where absent (see ADR-0007). The pages use Hugo shortcodes (code samples, includes, headings, feature states), so a preparation step renders them to plain Markdown per release (`ragqa.evaluation.corpus`), records the source commit and a hash of every file in a manifest, and the result is kept outside the repository, read-only. Rendering follows the site's templates as of each release, and a few decorative shortcodes are dropped (listed in ML_DESIGN section 3).
 
 ## ADR-0007: Metadata schema
 
