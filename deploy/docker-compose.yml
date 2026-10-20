@@ -1,0 +1,282 @@
+name: ragqa
+
+# Profiles (ADR-0020):
+#   default  postgres, qdrant, rabbitmq, mlflow, api, worker
+#   ml       tei (embeddings), litellm (LLM proxy)          large first download
+#   obs      prometheus, grafana, loki, alloy
+# Start everything: docker compose --profile ml --profile obs up -d --build
+#
+# Compose checks every ${VAR:?} even for services whose profile is off, so all
+# required variables must be set in deploy/.env (see .env.example).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-env: &app-env
+  RAGQA_POSTGRES_DSN: postgresql+asyncpg://ragqa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/ragqa
+  RAGQA_RABBITMQ_URL: amqp://ragqa:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in deploy/.env}@rabbitmq:5672/
+  RAGQA_QDRANT_URL: http://qdrant:6333
+  RAGQA_EMBEDDER_URL: http://tei:80
+  RAGQA_LITELLM_URL: http://litellm:4000
+  RAGQA_LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in deploy/.env}
+  RAGQA_MLFLOW_TRACKING_URI: http://mlflow:5000
+  RAGQA_MLFLOW_EXPERIMENT: ragqa-traces
+  RAGQA_TRACING_ENABLED: "true"
+  RAGQA_FILES_DIR: /data/files
+  RAGQA_ENV: ${RAGQA_ENV:-dev}
+  RAGQA_LOG_LEVEL: ${RAGQA_LOG_LEVEL:-INFO}
+  RAGQA_LOG_FORMAT: json
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: ragqa-app:dev
+  logging: *logging
+  restart: unless-stopped
+  volumes:
+    - raw_files:/data/files
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    qdrant:
+      condition: service_started
+    mlflow:
+      condition: service_healthy
+
+services:
+  # --- Stateful services ---
+
+  postgres:
+    image: postgres:17.11
+    environment:
+      POSTGRES_USER: ragqa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: ragqa
+      # Read by the init script that creates the mlflow database (first start only).
+      MLFLOW_DB_PASSWORD: ${MLFLOW_DB_PASSWORD:?set MLFLOW_DB_PASSWORD in deploy/.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/10-create-mlflow-db.sh:/docker-entrypoint-initdb.d/10-create-mlflow-db.sh:ro,z
+    ports:
+      - "127.0.0.1:5432:5432"
+    logging: *logging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragqa -d ragqa"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    # Server-side BM25 needs >= 1.15.3 and RRF k/weights >= 1.17 (ADR-0018).
+    image: qdrant/qdrant:v1.19.2
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    logging: *logging
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.3.6-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ragqa
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in deploy/.env}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672" # management UI
+    logging: *logging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    build: ./mlflow
+    image: ragqa-mlflow:3.17.1
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --artifacts-destination=/mlflow/artifacts
+    environment:
+      # From the environment rather than the command line, so the password is not in `ps`.
+      # Driver named explicitly: SQLAlchemy 2.1 defaults postgresql:// to psycopg 3, and the image has psycopg2.
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow:${MLFLOW_DB_PASSWORD:?set MLFLOW_DB_PASSWORD in deploy/.env}@postgres:5432/mlflow
+      # MLflow 3 rejects Host headers other than localhost and private IPs by default.
+      MLFLOW_SERVER_ALLOWED_HOSTS: "mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
+
+  # --- Application ---
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+      RAGQA_SERVICE_NAME: ragqa-api
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "ragqa.worker"]
+    environment:
+      <<: *app-env
+      RAGQA_SERVICE_NAME: ragqa-worker
+      RAGQA_WORKER_METRICS_PORT: "9100"
+    ports:
+      - "127.0.0.1:9100:9100" # Prometheus metrics
+    # Longer than RAGQA_WORKER_SHUTDOWN_GRACE_S, so an in-flight job can finish.
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/metrics', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # --- ml profile ---
+
+  tei:
+    profiles: [ml]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
+    # Model and revision pinned by ADR-0019.
+    command:
+      - --model-id=Snowflake/snowflake-arctic-embed-m-v2.0
+      - --revision=95c2741480856aa9666782eb4afe11959938017f
+      - --port=80
+    volumes:
+      - tei_models:/data
+    ports:
+      - "127.0.0.1:8080:80"
+    logging: *logging
+    restart: unless-stopped
+
+  litellm:
+    profiles: [ml]
+    image: ghcr.io/berriai/litellm:v1.106.0
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in deploy/.env}
+      # Optional until the first real LLM call.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro,z
+    ports:
+      - "127.0.0.1:4000:4000"
+    logging: *logging
+    restart: unless-stopped
+
+  # --- obs profile ---
+
+  prometheus:
+    profiles: [obs]
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    logging: *logging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  loki:
+    profiles: [obs]
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/config.yaml:ro,z
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    logging: *logging
+    restart: unless-stopped
+
+  alloy:
+    profiles: [obs]
+    image: grafana/alloy:v1.21.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro,z
+      # Read-only, but access to the Docker socket is still root-equivalent on the host.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+    # SELinux blocks containers from the Docker socket; disable labeling for this one.
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:12345:12345" # Alloy UI
+    depends_on:
+      - loki
+    logging: *logging
+    restart: unless-stopped
+
+  grafana:
+    profiles: [obs]
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in deploy/.env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro,z
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro,z
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+    logging: *logging
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  rabbitmq_data:
+  raw_files:
+  mlflow_artifacts:
+  tei_models:
+  prometheus_data:
+  loki_data:
+  alloy_data:
+  grafana_data:

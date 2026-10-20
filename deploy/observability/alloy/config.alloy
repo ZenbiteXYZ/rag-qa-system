@@ -1,0 +1,53 @@
+// Ship logs of the ragqa Compose project's containers to Loki.
+// Labels stay low-cardinality: service, container, level. Ids (request_id, job_id,
+// trace_id) stay in the JSON line and are queried with `| json`.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=ragqa"]
+  }
+}
+
+discovery.relabel "containers" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.containers.rules
+  forward_to    = [loki.process.levels.receiver]
+}
+
+// Our services log JSON with a `level` field; other containers pass through unchanged.
+loki.process "levels" {
+  stage.json {
+    expressions = { level = "level" }
+  }
+
+  stage.labels {
+    values = { level = "" }
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

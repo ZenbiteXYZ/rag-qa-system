@@ -1,0 +1,18 @@
+# LiteLLM proxy config (ADR-0016). Owned by the author; this is a placeholder so the
+# proxy starts. Model ids come from ADR-0019 and must still be verified against the
+# pinned LiteLLM version and OpenRouter (TODO(author)).
+# Secrets are read from the container environment, never written here.
+
+model_list:
+  - model_name: generator
+    litellm_params:
+      model: openrouter/anthropic/claude-haiku-5.5-20261007
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: judge
+    litellm_params:
+      model: openrouter/openai/gpt-6-luna-20260922
+      api_key: os.environ/OPENROUTER_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
