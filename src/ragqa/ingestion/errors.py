@@ -15,3 +15,7 @@ class TransientIngestionError(IngestionError):
     Any exception that is not a `PermanentIngestionError` is also treated as transient, so
     raising this is only needed to make the intent explicit.
     """
+
+
+class UnsupportedFormatError(PermanentIngestionError):
+    """No parser is registered for the file's extension."""
