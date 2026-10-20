@@ -179,7 +179,7 @@ Runs in the worker. A job is delivered through RabbitMQ and processed in stages,
 - **Chunker** is the swappable stage. The strategy belongs to the index, chosen at upload by selecting the target index (ADR-0013).
 - **Embedder** is called over HTTP in batches (ADR-0012). TEI also batches dynamically on the server side across concurrent requests. Many models need different prefixes for queries and passages, so the `Embedder` interface has separate query and passage methods.
 - **Upsert** writes the dense vector from the embedder and the BM25 sparse vector for the same chunk text (ADR-0018). Qdrant computes the BM25 sparse vector itself from the chunk text (a `Document` with model `Qdrant/bm25`, available on self-hosted instances per the docs), so `EmbeddedChunk` stays dense only and TEI is not involved.
-- Field-level definitions of `ParsedDocument`, `Chunk` and `EmbeddedChunk`: **TODO(author)**.
+- **Types** are in `src/ragqa/domain/documents.py` (ADR-0021). `ParsedDocument` holds one normalized text plus `sections` and `code_spans` as character spans into it. `Chunk` carries its own source span, `section_path`, `token_count` and `has_code`. `EmbeddedChunk` adds the dense vector. The format is an open string key resolved by a parser registry, so adding a format changes no type.
 
 Ingestion sequence (success path):
 

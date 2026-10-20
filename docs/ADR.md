@@ -164,3 +164,14 @@ Date of all records below: 2026-10-14.
   - **Metrics:** `prometheus-client` on the API (`/metrics`) and on the worker (port 9100). Prometheus also scrapes Qdrant, RabbitMQ and TEI. Grafana has provisioned datasources and one operations dashboard.
   - **Compose profiles:** the default set is Postgres, Qdrant, RabbitMQ, MLflow, API and worker. `ml` adds TEI and LiteLLM, `obs` adds Prometheus, Loki, Alloy and Grafana.
 - **Consequences:** Supersedes the deferral in ADR-0015. Four more services with the `obs` profile and their volumes. Alloy needs the Docker socket read-only and SELinux labeling disabled for that container, which gives it access to the Docker API. MLflow and LiteLLM are not scraped for metrics yet. Tracing is off unless `RAGQA_TRACING_ENABLED` is set.
+
+## ADR-0021: Document model: one normalized text with spans, formats through a parser registry
+
+- **Status:** Accepted
+- **Context:** Parsers, chunkers, the evidence validator and citations all need to agree on positions in a document. More formats (PDF, TXT, spreadsheets, slides) and possibly other modalities are likely later, and adding one should not change the core types.
+- **Decision:**
+  - A parser returns a `ParsedDocument`: one string `text` (NFC, `\n` line endings) and spans into it for sections and code blocks. Chunks keep their own source span next to their text, so evidence matching (ADR-0019) and citations use the same offsets.
+  - The source format is an open string, the key of a parser in a registry (`Parser` objects declare their format keys and file extensions). The API rejects an upload whose extension has no parser. Adding a format means adding a parser, not editing the model. A closed `Literal` or `Enum` in the domain would force that edit.
+  - Code blocks are marked as `code_spans` by the parser (fences in markdown). Chunks carry `has_code`, and chunkers can use `overlaps_code` to avoid splitting a block.
+  - The types are frozen Pydantic models with their invariants as validators. `src/ragqa/domain/documents.py`.
+- **Consequences:** Formats whose structure is not text (pages, slides, sheets) will need optional location fields on sections, which are backward-compatible additions. Other modalities are handled by parsers that convert to text (OCR or captions for images, transcription with timestamps for audio), so they reuse the pipeline and the evaluation unchanged. Native multimodal embeddings, and a separate code embedding model with its own vector, are not part of protocol v1: they would add vectors per index and need their own questions and a protocol change.
