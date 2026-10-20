@@ -10,7 +10,7 @@ The parsed text is close to what a reader sees on the rendered page:
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
 
@@ -69,15 +69,15 @@ def _replace_shortcode(match: re.Match[str]) -> str:
     return (param.group(1) or param.group(2) or "") if param else ""
 
 
-def strip_shortcodes(source: str) -> str:
-    """Remove Hugo shortcodes from prose. Fenced code blocks are left untouched."""
+def map_prose(source: str, transform: Callable[[str], str]) -> str:
+    """Apply `transform` to the text outside fenced code blocks. Code is left untouched."""
     segments: list[str] = []
     prose: list[str] = []
     fence: str | None = None
 
     def flush() -> None:
         if prose:
-            segments.append(_SHORTCODE.sub(_replace_shortcode, "\n".join(prose)))
+            segments.append(transform("\n".join(prose)))
             prose.clear()
 
     for line in source.split("\n"):
@@ -97,6 +97,11 @@ def strip_shortcodes(source: str) -> str:
                     fence = None
     flush()
     return "\n".join(segments)
+
+
+def strip_shortcodes(source: str) -> str:
+    """Remove Hugo shortcodes from prose. Fenced code blocks are left untouched."""
+    return map_prose(source, lambda prose: _SHORTCODE.sub(_replace_shortcode, prose))
 
 
 def _inline_piece(token: Token) -> str:
