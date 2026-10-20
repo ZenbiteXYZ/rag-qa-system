@@ -72,22 +72,19 @@ Notes:
 
 ### Postgres (registry)
 
-Draft tables and key columns. Exact types and constraints are **TODO(author)**.
-
 | Table | Key columns |
 |-------|-------------|
 | `documents` | `id`, `title`, `latest_version_id`, `created_at`, `deleted_at` |
 | `versions` | `id`, `document_id`, `number`, `content_hash`, `raw_path`, `size_bytes`, `uploaded_at`, `metadata` (JSONB: `doc_type`, `tags`, `author`, `doc_date`, `language`) |
-| `indexes` | `name`, `embedder`, `chunker`, `params` (JSONB), `vector_size`, `sparse` (`bm25`) |
-| `version_index_builds` | `version_id`, `index_name`, `status`, `chunk_count`, `built_at` |
-| `jobs` | `id`, `version_id`, `index_name`, `status`, `attempts`, `error`, `created_at`, `updated_at` |
+| `indexes` | `id` (bigint identity), `name` (unique), `collection` (unique, the Qdrant collection), `dense_model`, `dense_vector_size`, `dense_distance` (default `cosine`), `sparse_model` (`Qdrant/bm25`), `chunking_strategy`, `chunking_params` (JSONB) |
+| `version_index_builds` | `version_id`, `index_id`, `status`, `chunk_count`, `built_at` |
+| `jobs` | `id`, `version_id`, `index_id`, `status`, `attempts`, `error`, `created_at`, `updated_at` |
 
 - **Job status** values: `queued`, `parsing`, `chunking`, `embedding`, `ready`, `failed`, `dead` (story A2, ADR-0011).
 - **Source of truth for "latest"** is `documents.latest_version_id` (ADR-0014).
+- **Indexes have a surrogate key.** Foreign keys point at `indexes.id`, so renaming an index or re-creating one with the same name never re-attaches old jobs and builds. The API accepts the index `name` and resolves it to the id. Logs and metric labels carry the name. Sparse vectors have no fixed size, so there is no sparse size column.
 - **Known filter values** (for Self-Query validation, ADR-0008) are derived with `SELECT DISTINCT` over latest-version metadata, plus tombstone titles for story A6. No separate synced table.
 - MLflow uses its own database in the same Postgres instance.
-
-Draft entity relationships. Column types are illustrative and the real ones are **TODO(author)**. `documents.latest_version_id` and `versions.document_id` reference each other.
 
 ```mermaid
 erDiagram
@@ -116,16 +113,19 @@ erDiagram
         json metadata
     }
     indexes {
-        text name PK
-        text embedder
-        text chunker
-        json params
-        int vector_size
-        text sparse
+        int id PK
+        text name UK
+        text collection UK
+        text dense_model
+        int dense_vector_size
+        text dense_distance
+        text sparse_model
+        text chunking_strategy
+        json chunking_params
     }
     version_index_builds {
         id version_id FK
-        text index_name FK
+        int index_id FK
         text status
         int chunk_count
         ts built_at
@@ -133,7 +133,7 @@ erDiagram
     jobs {
         id id PK
         id version_id FK
-        text index_name FK
+        int index_id FK
         text status
         int attempts
         text error
@@ -147,7 +147,7 @@ erDiagram
 - **One collection per index config** = (embedding model, chunking strategy and params), named like `chunks_<embedder>_<chunker>_<params>` (ADR-0013). The same document version can be built in several indexes.
 - **Named vectors per point** (ADR-0018): `dense` (size taken from the index's embedder) and sparse `bm25` (BM25 over the chunk text, IDF modifier on the sparse vector config). Both are defined when the collection is created, even if an index is queried in dense mode only.
 - **Payload:** `document_id`, `version`, `is_latest`, `doc_type`, `tags`, `author`, `doc_date`, `language`, `section_path`, `chunk_index`, `text`.
-- **Point id:** deterministic UUID v5 from (version id, index, chunk index), so retried upserts overwrite.
+- **Point id:** deterministic UUID v5 from (version id, index id, chunk index), so retried upserts overwrite. The index **id** is used, not its name, so renaming an index never changes point ids.
 - **Payload indexes** on every filtered field (verify the exact setup in the Qdrant docs).
 - **`is_latest` in the payload** is a denormalized copy for fast filtering. Postgres is the truth.
 
@@ -316,7 +316,7 @@ FastAPI generates the OpenAPI schema from Pydantic models. The exported `openapi
 | DELETE | `/documents/{id}` | Delete a document (tombstone stays) | | 202 |
 | GET | `/jobs/{id}` | Ingestion job status | | `status`, `attempts`, `error` |
 | GET | `/indexes` | List available indexes | | list of index configs |
-| POST | `/indexes` | Create an index (collection in Qdrant plus a registry row) | `name`, `embedder`, `chunker`, `params` | 201: index config |
+| POST | `/indexes` | Create an index (collection in Qdrant plus a registry row) | `name`, `dense_model`, `chunking_strategy`, `chunking_params` | 201: index config |
 | POST | `/query` | Ask a question | `question`, `index`, `filters`, `version`, pipeline config (stage toggles) | one of three responses below |
 | POST | `/query/stream` | Same as `/query`, streamed over SSE | same as `/query` | `text/event-stream`: token events, then a final event with the same union as `/query` |
 | GET | `/health` | Liveness and dependency check | | status |

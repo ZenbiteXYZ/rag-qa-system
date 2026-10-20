@@ -96,7 +96,8 @@ Date of all records below: 2026-10-14.
 - **Context:** Vector size is fixed per collection and differs by embedding model. Mixing chunking strategies in one collection mixes their results and confounds chunking experiments (story D1).
 - **Decision:** One Qdrant collection per index config, defined as (embedding model, chunking strategy and params), named like `chunks_<embedder>_<chunker>_<params>`. The user chooses the target index at upload, and a query selects the index to search. The same document version may be built in several indexes, tracked in a version-to-index build table with its own status.
   - Payload: `document_id`, `version`, `is_latest`, `doc_type`, `tags`, `author`, `doc_date`, `language`, `section_path`, `chunk_index`, `text`.
-  - Point id: deterministic UUID v5 from (version id, index, chunk index).
+  - Registry: each index has a surrogate `id` (primary key) and unique `name` and `collection`. Foreign keys use the id.
+  - Point id: deterministic UUID v5 from (version id, index id, chunk index). The id, not the name, so a rename keeps point ids.
   - Payload indexes on every filtered field (verify the details in the Qdrant docs).
 - **Consequences:** Strategy comparison means ingesting the same corpus into several indexes (more storage and embedding time). Changing the embedding model creates a new index and does not modify an existing one. Deterministic ids make retried upserts overwrite instead of duplicating.
 
