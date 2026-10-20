@@ -6,7 +6,7 @@ Users upload documents (`.md`, `.docx`), the service keeps every version of each
 
 ## Status
 
-Design is written, implementation has just started. Only a `/health` endpoint exists. The worker, embedding server, LiteLLM proxy and MLflow are not in Docker Compose yet. Nothing has been evaluated yet.
+Infrastructure is in place: API skeleton (`/health`, `/ready`, `/metrics`), ingestion worker with retry and dead-letter queues, structured logs, tracing and metrics. Ingestion and question answering are not implemented yet. Nothing has been evaluated yet.
 
 ## Planned stack
 
@@ -23,18 +23,18 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
 
-# Run the API locally (only /health for now)
-uv run uvicorn ragqa.api.main:app --reload
+# Run the API locally (needs RAGQA_POSTGRES_DSN and RAGQA_RABBITMQ_URL)
+uv run uvicorn --factory ragqa.api.main:create_app --reload
 ```
 
 ```bash
 # Services with Docker Compose
-cd deploy
-cp .env.example .env        # then change the passwords
-docker compose up --build
+cp deploy/.env.example deploy/.env   # then fill in the passwords
+make up                               # default services
+make up PROFILES="ml obs"             # plus TEI, LiteLLM and the monitoring stack
 ```
 
-The API listens on `http://localhost:8000` (`/health`, and the generated docs at `/docs`).
+The API listens on `http://localhost:8000` (generated docs at `/docs`). MLflow is on port 5000, the RabbitMQ management UI on 15672, Grafana on 3000 and Prometheus on 9090. The first start with the `ml` profile downloads the embedding model.
 
 ## Documentation
 

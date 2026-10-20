@@ -298,7 +298,7 @@ sequenceDiagram
     API-->>U: answer, citations, trace_id
 ```
 
-**Traces** (ADR-0015): MLflow Tracing, one span per stage, with inputs, outputs, latency and token usage. The trace id returned by `POST /query` is the MLflow trace id. The eval runner reads traces with `mlflow.search_traces`. The API uses the lightweight `mlflow-tracing` package with async logging. Prometheus and Grafana for RPS and failure rates are deferred.
+**Traces** (ADR-0015): MLflow Tracing, one span per stage, with inputs, outputs, latency and token usage. The trace id returned by `POST /query` is the MLflow trace id. The eval runner reads traces with `mlflow.search_traces`. The API uses the lightweight `mlflow-tracing` package with async logging. Infrastructure spans (FastAPI, httpx) share the tracer provider and land in the same MLflow trace. Metrics, logs and dashboards are in ADR-0020: Prometheus, Loki through Alloy, and Grafana under the `obs` Compose profile.
 
 **Deleted documents** (story A6): if Self-Query resolves a document name to a tombstone, the pipeline stops after that stage and returns a `document_deleted` response.
 
