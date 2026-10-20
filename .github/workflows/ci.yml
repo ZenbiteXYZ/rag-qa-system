@@ -1,9 +1,15 @@
 name: CI
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+    branches: [main, develop]
 
 permissions:
   contents: read
@@ -11,11 +17,14 @@ permissions:
 jobs:
   python:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
       - name: Install
         run: uv sync --frozen --extra dev
       - name: Lint
@@ -29,6 +38,7 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       # Dummy values, only to make `docker compose config` interpolate.
       POSTGRES_PASSWORD: ci
@@ -37,10 +47,45 @@ jobs:
       GRAFANA_ADMIN_PASSWORD: ci
       LITELLM_MASTER_KEY: sk-ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Validate Compose
         run: |
           docker compose -f deploy/docker-compose.yml config -q
           docker compose -f deploy/docker-compose.yml --profile ml --profile obs config -q
       - name: Build app image
         run: docker build -f deploy/Dockerfile -t ragqa-app:ci .
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      rabbitmq:
+        # Same version as deploy/docker-compose.yml, without the management plugin.
+        image: rabbitmq:4.3.6
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RAGQA_TEST_RABBITMQ_URL: amqp://ci:ci@localhost:5672/
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install
+        run: uv sync --frozen --extra dev
+      - name: Integration tests
+        # The tests skip when the broker URL is unset, and a skip exits 0. Fail on any skip.
+        shell: bash
+        run: |
+          uv run pytest -m integration -q -rs | tee pytest.log
+          ! grep -qi "skipped" pytest.log
