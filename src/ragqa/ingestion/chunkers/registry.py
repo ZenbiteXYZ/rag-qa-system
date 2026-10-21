@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from ragqa.domain.documents import Chunk, ParsedDocument
+from ragqa.domain.indexes import Index
 
 
 class TokenCounter(Protocol):
@@ -25,6 +26,9 @@ class Chunker(Protocol):
         """Synchronous and CPU-bound: the worker runs it in an executor (ADR-0011)."""
         ...
 
+
+# Builds the counter for an index's embedder tokenizer. The wiring has none until one is written.
+TokenCounterFactory = Callable[[Index], TokenCounter]
 
 # Builds a chunker from `indexes.chunking_params`. Validate the params here (for example
 # with a pydantic model) and raise `ValueError` for bad ones, so `POST /indexes` can

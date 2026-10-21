@@ -27,7 +27,17 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = "http://localhost:5000"
     files_dir: Path = Path("data/files")
 
+    # Documents
+    max_upload_bytes: int = 20 * 1024 * 1024
+    default_index: str | None = None  # used when an upload names none and several exist
+
     # Embedder (ADR-0012). The base model wants this prefix on queries and none on passages.
+    # `embedder_model` is the one dense model this deployment serves, and `POST /indexes`
+    # rejects any other.
+    embedder_model: str = "Snowflake/snowflake-arctic-embed-m-v2.0"
+    # Pinned in ADR-0019; the token counter loads the tokenizer at this revision.
+    embedder_revision: str = "95c2741480856aa9666782eb4afe11959938017f"
+    embedder_timeout_s: float = 120.0
     embedder_query_prefix: str = "query: "
     embedder_passage_prefix: str = ""
     embedder_batch_size: int = 32
@@ -47,6 +57,9 @@ class Settings(BaseSettings):
     ingest_retry_base_delay_s: float = 5.0
     # Below Compose's stop_grace_period, so an in-flight job can finish before SIGKILL.
     worker_shutdown_grace_s: float = 25.0
+    # Maintenance loop in the worker: re-send stuck `queued` jobs and finish deletions.
+    maintenance_interval_s: float = 30.0
+    republish_after_s: float = 60.0
 
 
 @lru_cache

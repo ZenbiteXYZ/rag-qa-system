@@ -94,6 +94,14 @@ class JobInfo:
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class BuildInfo:
+    index_name: str
+    status: JobStatus
+    chunk_count: int | None
+    built_at: datetime | None
+
+
 def create_session_factory(dsn: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(dsn, pool_pre_ping=True)
     return engine, async_sessionmaker(engine, expire_on_commit=False)
@@ -333,8 +341,8 @@ class Registry:
 
     async def complete_build(self, job_id: uuid.UUID, *, chunk_count: int) -> bool:
         """ADR-0014 step 2: build ready, job ready, and the latest pointer moved if this is
-        the newest version that is ready anywhere. Returns True if the pointer moved, so the
-        caller then flips `is_latest` in Qdrant (step 3)."""
+        the newest version that is ready anywhere. Returns True if this version is the latest
+        one, so the caller then flips `is_latest` in Qdrant (step 3). The flip is idempotent."""
         async with self._sessions.begin() as session:
             job = await session.get(Job, job_id, with_for_update=True)
             if job is None:
@@ -356,7 +364,9 @@ class Registry:
             if current_number is None or version.number > current_number:
                 document.latest_version_id = version.id
                 return True
-            return False
+            # A retry after a crash between this commit and the Qdrant flip, or the same
+            # version built in a second index: the pointer is already here, the flip is not.
+            return document.latest_version_id == version.id
 
     async def stuck_jobs(self, older_than: timedelta) -> list[IngestJob]:
         """Jobs still `queued` after `older_than`, for the republisher (ADR-0011)."""
@@ -387,6 +397,18 @@ class Registry:
             .on_conflict_do_update(index_elements=["version_id", "index_id"], set_=values)
         )
 
+    async def list_builds(self, version_id: uuid.UUID) -> list[BuildInfo]:
+        async with self._sessions() as session:
+            rows = await session.execute(
+                select(IndexRecord.name, VersionIndexBuild)
+                .join(IndexRecord, IndexRecord.id == VersionIndexBuild.index_id)
+                .where(VersionIndexBuild.version_id == version_id)
+                .order_by(IndexRecord.name)
+            )
+            return [
+                BuildInfo(name, JobStatus(b.status), b.chunk_count, b.built_at) for name, b in rows
+            ]
+
     # --- Deletion (Flow 7)
 
     async def tombstone(self, document_id: uuid.UUID) -> list[VersionInfo]:
@@ -399,6 +421,19 @@ class Registry:
                 document.deleted_at = func.now()
             rows = await session.scalars(select(Version).where(Version.document_id == document_id))
             return [_version(r) for r in rows]
+
+    async def pending_deletions(self) -> list[uuid.UUID]:
+        """Tombstoned documents whose versions are still there, for the cleanup loop."""
+        async with self._sessions() as session:
+            rows = await session.scalars(
+                select(Document.id)
+                .where(
+                    Document.deleted_at.is_not(None),
+                    select(Version.id).where(Version.document_id == Document.id).exists(),
+                )
+                .order_by(Document.deleted_at)
+            )
+            return list(rows)
 
     async def purge_versions(self, document_id: uuid.UUID) -> None:
         """Step 3, after vectors and files are gone: drop versions, keep the tombstone row.

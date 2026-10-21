@@ -8,7 +8,7 @@ the message unacked and RabbitMQ redelivers it, so the handler must be idempoten
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from typing import Any, Protocol
 
 import aio_pika
 import mlflow
@@ -28,6 +28,15 @@ log = get_logger(__name__)
 
 JobHandler = Callable[[IngestJob], Awaitable[None]]
 
+
+class JobReporter(Protocol):
+    """Records a job's final failure where users can see it (`GET /jobs/{id}`)."""
+
+    async def failed(self, job: IngestJob, error: str) -> None: ...
+
+    async def dead(self, job: IngestJob, error: str) -> None: ...
+
+
 _MAX_ERROR_HEADER_LEN = 500
 
 
@@ -40,6 +49,10 @@ def attempt_of(headers: Mapping[str, Any] | None) -> int:
         return 0
 
 
+def _error_text(exc: BaseException) -> str:
+    return redact_text(f"{type(exc).__name__}: {exc}")[:_MAX_ERROR_HEADER_LEN]
+
+
 class IngestConsumer:
     def __init__(
         self,
@@ -48,8 +61,10 @@ class IngestConsumer:
         *,
         retry_exchange: AbstractExchange,
         dead_exchange: AbstractExchange,
+        reporter: JobReporter | None = None,
     ) -> None:
         self._handler = handler
+        self._reporter = reporter
         self._topology = topology
         self._retry_exchange = retry_exchange
         self._dead_exchange = dead_exchange
@@ -113,21 +128,22 @@ class IngestConsumer:
         try:
             await self._handler(job)
         except PermanentIngestionError as exc:
-            # TODO(slice 2): mark the job failed in Postgres with the error.
             log.error("job_failed", error_type=type(exc).__name__, error=str(exc))
+            if self._reporter is not None:
+                await self._reporter.failed(job, _error_text(exc))
             await message.ack()
             return "failed"
         except Exception as exc:
-            return await self._retry_or_dead(message, attempt, exc)
-        # TODO(slice 2): job status `ready` is set by the ingestion function's transaction.
+            return await self._retry_or_dead(job, message, attempt, exc)
+        # The handler's transaction sets the job status `ready`.
         await message.ack()
         log.info("job_done")
         return "ready"
 
     async def _retry_or_dead(
-        self, message: AbstractIncomingMessage, attempt: int, exc: Exception
+        self, job: IngestJob, message: AbstractIncomingMessage, attempt: int, exc: Exception
     ) -> JobOutcome:
-        error = redact_text(f"{type(exc).__name__}: {exc}")[:_MAX_ERROR_HEADER_LEN]
+        error = _error_text(exc)
         if attempt < self._topology.max_retries:
             next_attempt = attempt + 1
             await self._republish(
@@ -146,7 +162,8 @@ class IngestConsumer:
             )
             return "retry"
 
-        # TODO(slice 2): mark the job dead in Postgres with the error.
+        if self._reporter is not None:
+            await self._reporter.dead(job, error)
         await self._republish(message, self._dead_exchange, JOB_ROUTING_KEY, attempt, error)
         await message.ack()
         log.error("job_dead", retries=attempt, exc_info=exc)

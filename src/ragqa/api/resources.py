@@ -6,9 +6,12 @@ from dataclasses import dataclass
 import aio_pika
 import httpx
 from aio_pika.abc import AbstractRobustConnection
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ragqa.settings import Settings
+from ragqa.wiring import Backends
+from ragqa.worker.publisher import JobPublisher
+from ragqa.worker.topology import Topology
 
 
 class AmqpConnector:
@@ -35,20 +38,26 @@ class AmqpConnector:
 
 @dataclass
 class Resources:
-    http: httpx.AsyncClient
-    # Replaced by the storage/postgres session factory in slice 2.
-    engine: AsyncEngine
+    backends: Backends
+    http: httpx.AsyncClient  # short timeout, for readiness probes
     amqp: AmqpConnector
+    publisher: JobPublisher
+
+    @property
+    def engine(self) -> AsyncEngine:
+        return self.backends.engine
 
     @classmethod
     def create(cls, settings: Settings) -> "Resources":
+        amqp = AmqpConnector(settings.rabbitmq_url, settings.service_name)
         return cls(
+            backends=Backends.create(settings),
             http=httpx.AsyncClient(timeout=httpx.Timeout(5.0)),
-            engine=create_async_engine(settings.postgres_dsn, pool_pre_ping=True),
-            amqp=AmqpConnector(settings.rabbitmq_url, settings.service_name),
+            amqp=amqp,
+            publisher=JobPublisher(amqp.get, Topology.from_settings(settings)),
         )
 
     async def close(self) -> None:
         await self.amqp.close()
-        await self.engine.dispose()
+        await self.backends.close()
         await self.http.aclose()

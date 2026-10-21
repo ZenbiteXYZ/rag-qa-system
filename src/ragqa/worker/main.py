@@ -6,18 +6,23 @@ import signal
 import aio_pika
 from prometheus_client import start_http_server
 
-from ragqa.ingestion.pipeline import ingest_document
+from ragqa.embeddings.tokens import hf_token_counter_factory
+from ragqa.ingestion.service import IngestionService
 from ragqa.observability.logging import configure_logging, get_logger
 from ragqa.observability.metrics import WORKER_CONSUMING
 from ragqa.observability.tracing import setup_tracing, shutdown_tracing
 from ragqa.settings import Settings, get_settings
-from ragqa.worker.consumer import IngestConsumer, JobHandler
+from ragqa.wiring import Backends
+from ragqa.worker.consumer import IngestConsumer
+from ragqa.worker.maintenance import run_maintenance
+from ragqa.worker.publisher import publish_job
+from ragqa.worker.reporter import RegistryJobReporter
 from ragqa.worker.topology import Topology, declare_topology
 
 log = get_logger(__name__)
 
 
-async def run(settings: Settings, handler: JobHandler, stop: asyncio.Event) -> None:
+async def run(settings: Settings, backends: Backends, stop: asyncio.Event) -> None:
     topology = Topology.from_settings(settings)
     connection = await aio_pika.connect_robust(
         settings.rabbitmq_url, client_properties={"connection_name": settings.service_name}
@@ -27,13 +32,34 @@ async def run(settings: Settings, handler: JobHandler, stop: asyncio.Event) -> N
         # One unacked job at a time (ADR-0011).
         await channel.set_qos(prefetch_count=1)
         declared = await declare_topology(channel, topology)
+        service = IngestionService(
+            registry=backends.registry,
+            files=backends.files,
+            chunk_store=backends.chunk_store,
+            embedder=backends.embedder,
+            parsers=backends.parsers,
+            chunkers=backends.chunkers,
+            token_counter=backends.token_counter,
+        )
         consumer = IngestConsumer(
-            handler,
+            service.ingest,
             topology,
             retry_exchange=declared.retry_exchange,
             dead_exchange=declared.dead_exchange,
+            reporter=RegistryJobReporter(backends.registry),
         )
         tag = await declared.jobs_queue.consume(consumer)
+        maintenance = asyncio.create_task(
+            run_maintenance(
+                backends.registry,
+                backends.files,
+                backends.chunk_store,
+                lambda job: publish_job(declared.exchange, job),
+                interval_s=settings.maintenance_interval_s,
+                republish_after_s=settings.republish_after_s,
+                stop=stop,
+            )
+        )
         WORKER_CONSUMING.set(1)
         log.info(
             "worker_started", queue=topology.jobs_queue, retry_delays_s=topology.retry_delays_s
@@ -43,6 +69,7 @@ async def run(settings: Settings, handler: JobHandler, stop: asyncio.Event) -> N
 
         log.info("worker_stopping")
         await declared.jobs_queue.cancel(tag)
+        await maintenance
         WORKER_CONSUMING.set(0)
         try:
             await asyncio.wait_for(consumer.wait_idle(), settings.worker_shutdown_grace_s)
@@ -57,7 +84,11 @@ async def _main(settings: Settings) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
-    await run(settings, ingest_document, stop)
+    backends = Backends.create(settings, token_counter=hf_token_counter_factory(settings))
+    try:
+        await run(settings, backends, stop)
+    finally:
+        await backends.close()
 
 
 def main() -> None:

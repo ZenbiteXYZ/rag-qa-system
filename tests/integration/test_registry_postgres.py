@@ -7,13 +7,10 @@ contain "test".
 
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
 from datetime import timedelta
 
 import pytest
 from alembic import command
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
 
 from ragqa.domain.conversation import ChatMessage, NewMessage, ToolCall
 from ragqa.domain.indexes import IndexConfig
@@ -24,41 +21,14 @@ from ragqa.storage.postgres.registry import (
     NotFoundError,
     Registry,
     Upload,
-    create_session_factory,
 )
-
-DSN = os.environ.get("RAGQA_TEST_POSTGRES_DSN")
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(DSN is None, reason="RAGQA_TEST_POSTGRES_DSN not set"),
+    pytest.mark.skipif(
+        os.environ.get("RAGQA_TEST_POSTGRES_DSN") is None, reason="RAGQA_TEST_POSTGRES_DSN not set"
+    ),
 ]
-
-
-@pytest.fixture(scope="module")
-def migrated() -> Iterator[str]:
-    assert DSN is not None
-    if "test" not in (make_url(DSN).database or ""):
-        pytest.fail("refusing to reset a database whose name does not contain 'test'")
-    config = alembic_config(DSN)
-    command.downgrade(config, "base")
-    command.upgrade(config, "head")
-    yield DSN
-
-
-@pytest.fixture
-async def registry(migrated: str) -> AsyncIterator[Registry]:
-    engine, sessions = create_session_factory(migrated)
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "TRUNCATE messages, conversations, jobs, version_index_builds, versions, "
-                "documents, indexes "
-                "RESTART IDENTITY CASCADE"
-            )
-        )
-    yield Registry(sessions)
-    await engine.dispose()
 
 
 def upload(content_hash: str = "a" * 64) -> Upload:
@@ -216,3 +186,47 @@ async def test_unknown_conversation(registry: Registry) -> None:
         await registry.append_messages(
             uuid.uuid4(), [NewMessage(message=ChatMessage(role="user", content="hi"))]
         )
+
+
+async def test_complete_build_reports_latest_again_after_a_retry(registry: Registry) -> None:
+    index_id = await make_index(registry)
+    document_id = uuid.uuid4()
+    job = await registry.create_document(document_id, "Guide", upload(), index_id)
+
+    assert await registry.complete_build(job.job_id, chunk_count=3) is True
+    # The worker crashed before flipping `is_latest` in Qdrant and the job came back.
+    assert await registry.complete_build(job.job_id, chunk_count=3) is True
+
+
+async def test_same_version_built_in_a_second_index_flips_there_too(registry: Registry) -> None:
+    first, second = await make_index(registry, "a"), await make_index(registry, "b")
+    document_id = uuid.uuid4()
+    job_a = await registry.create_document(document_id, "Guide", upload(), first)
+    job_b = await registry.add_version(document_id, upload("b" * 64), second)
+    assert job_b is not None
+
+    assert await registry.complete_build(job_a.job_id, chunk_count=1) is True
+    assert await registry.complete_build(job_b.job_id, chunk_count=1) is True  # newer, takes it
+    # Version 1 finishing late anywhere never takes the pointer back.
+    late = await registry.add_version(document_id, upload("c" * 64), first)
+    assert late is not None
+    assert await registry.complete_build(late.job_id, chunk_count=1) is True
+    assert await registry.complete_build(job_a.job_id, chunk_count=1) is False
+
+
+async def test_list_builds_and_pending_deletions(registry: Registry) -> None:
+    index_id = await make_index(registry, "base")
+    document_id = uuid.uuid4()
+    job = await registry.create_document(document_id, "Guide", upload(), index_id)
+    await registry.complete_build(job.job_id, chunk_count=7)
+
+    builds = await registry.list_builds(job.version_id)
+    assert [(b.index_name, b.status, b.chunk_count) for b in builds] == [
+        ("base", JobStatus.READY, 7)
+    ]
+
+    assert await registry.pending_deletions() == []
+    await registry.tombstone(document_id)
+    assert await registry.pending_deletions() == [document_id]
+    await registry.purge_versions(document_id)
+    assert await registry.pending_deletions() == []

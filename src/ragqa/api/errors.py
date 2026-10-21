@@ -1,5 +1,6 @@
 """JSON error responses with the request id. Unhandled errors are caught by the middleware."""
 
+from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any
 
@@ -8,6 +9,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from structlog.contextvars import get_contextvars
+
+from ragqa.embeddings.tei import EmbedderError, EmbedderUnavailable
+from ragqa.ingestion.errors import UnsupportedFormatError
+from ragqa.storage.postgres.registry import DuplicateIndexError, NotFoundError
 
 
 def error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
@@ -43,6 +48,18 @@ async def validation_exception_handler(_: Request, exc: Exception) -> JSONRespon
     )
 
 
+def _handler(status: int, code: str) -> Callable[[Request, Exception], Awaitable[JSONResponse]]:
+    async def handle(_: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(error_body(code, str(exc)), status_code=status)
+
+    return handle
+
+
 def register_error_handlers(app: FastAPI) -> None:
+    app.add_exception_handler(NotFoundError, _handler(404, "not_found"))
+    app.add_exception_handler(DuplicateIndexError, _handler(409, "index_exists"))
+    app.add_exception_handler(UnsupportedFormatError, _handler(415, "unsupported_format"))
+    app.add_exception_handler(EmbedderError, _handler(502, "embedder_error"))
+    app.add_exception_handler(EmbedderUnavailable, _handler(503, "embedder_unavailable"))
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

@@ -29,8 +29,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH=/opt/venv/bin:$PATH
 
 RUN useradd --create-home --uid 10001 app \
-    && mkdir -p /data/files \
-    && chown app:app /data/files
+    && mkdir -p /data/files /home/app/.cache/huggingface \
+    && chown -R app:app /data/files /home/app/.cache
 COPY --from=builder /opt/venv /opt/venv
 
 USER app

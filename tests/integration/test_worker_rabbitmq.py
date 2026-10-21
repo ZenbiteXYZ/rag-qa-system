@@ -16,7 +16,7 @@ from aio_pika.abc import AbstractChannel
 from ragqa.domain.jobs import IngestJob
 from ragqa.ingestion.errors import PermanentIngestionError
 from ragqa.worker.consumer import IngestConsumer, JobHandler
-from ragqa.worker.publisher import publish_job
+from ragqa.worker.publisher import JobPublisher, publish_job
 from ragqa.worker.topology import ATTEMPT_HEADER, DeclaredTopology, Topology, declare_topology
 
 URL = os.environ.get("RAGQA_TEST_RABBITMQ_URL")
@@ -148,3 +148,26 @@ async def test_malformed_message_is_dead_lettered_by_broker(channel: AbstractCha
         assert dead.body == b"not json"
     finally:
         await _teardown(channel, topology)
+
+
+async def test_job_publisher_declares_the_topology_and_publishes(channel: AbstractChannel) -> None:
+    assert URL is not None
+    topology = Topology(prefix=f"test.{uuid.uuid4().hex[:8]}", retry_delays_s=(0.2,))
+    connection = await aio_pika.connect_robust(URL)
+
+    async def connect() -> aio_pika.abc.AbstractRobustConnection:
+        return connection
+
+    publisher = JobPublisher(connect, topology)
+    job = _job()
+    try:
+        await publisher.publish(job)
+        await publisher.publish(job)  # the channel and topology are reused
+
+        queue = await channel.get_queue(topology.jobs_queue)
+        message = await queue.get(timeout=5)
+        assert IngestJob.model_validate_json(message.body) == job
+        await message.ack()
+    finally:
+        await _teardown(channel, topology)
+        await connection.close()

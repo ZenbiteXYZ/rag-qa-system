@@ -39,6 +39,8 @@ x-app: &app
   restart: unless-stopped
   volumes:
     - raw_files:/data/files
+    # The chunkers count tokens with the embedder's tokenizer, downloaded once from the Hub.
+    - hf_cache:/home/app/.cache/huggingface
   depends_on:
     postgres:
       condition: service_healthy
@@ -294,6 +296,7 @@ volumes:
   qdrant_data:
   rabbitmq_data:
   raw_files:
+  hf_cache:
   mlflow_artifacts:
   tei_models:
   prometheus_data:

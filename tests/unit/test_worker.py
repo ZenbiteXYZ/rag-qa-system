@@ -191,3 +191,52 @@ def test_topology_from_settings(settings: Settings) -> None:
     assert topology.jobs_queue == "ragqa.ingest.jobs"
     assert topology.retry_queue(2) == "ragqa.ingest.retry.2"
     assert topology.dead_queue == "ragqa.ingest.dead"
+
+
+class FakeReporter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, uuid.UUID, str]] = []
+
+    async def failed(self, job: IngestJob, error: str) -> None:
+        self.calls.append(("failed", job.job_id, error))
+
+    async def dead(self, job: IngestJob, error: str) -> None:
+        self.calls.append(("dead", job.job_id, error))
+
+
+async def test_permanent_error_is_reported_as_failed() -> None:
+    async def handler(job: IngestJob) -> None:
+        raise PermanentIngestionError("empty file")
+
+    job, reporter = _job(), FakeReporter()
+    consumer = IngestConsumer(
+        handler,
+        TOPOLOGY,
+        retry_exchange=FakeExchange(),  # type: ignore[arg-type]
+        dead_exchange=FakeExchange(),  # type: ignore[arg-type]
+        reporter=reporter,
+    )
+
+    await consumer(FakeMessage(job.model_dump_json().encode()))  # type: ignore[arg-type]
+
+    assert reporter.calls == [("failed", job.job_id, "PermanentIngestionError: empty file")]
+
+
+async def test_job_that_runs_out_of_retries_is_reported_as_dead() -> None:
+    async def handler(job: IngestJob) -> None:
+        raise TransientIngestionError("embedder down")
+
+    job, reporter = _job(), FakeReporter()
+    consumer = IngestConsumer(
+        handler,
+        TOPOLOGY,
+        retry_exchange=FakeExchange(),  # type: ignore[arg-type]
+        dead_exchange=FakeExchange(),  # type: ignore[arg-type]
+        reporter=reporter,
+    )
+    last = FakeMessage(job.model_dump_json().encode(), {ATTEMPT_HEADER: TOPOLOGY.max_retries})
+
+    await consumer(last)  # type: ignore[arg-type]
+
+    assert [c[0] for c in reporter.calls] == ["dead"]
+    assert last.acked

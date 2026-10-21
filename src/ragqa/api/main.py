@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from ragqa.api import health
+from ragqa.api import conversations, documents, health, indexes, jobs
 from ragqa.api.errors import register_error_handlers
 from ragqa.api.readiness import build_checks
 from ragqa.api.resources import Resources
@@ -49,5 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
     register_error_handlers(app)
     app.include_router(health.router)
+    for router in (documents.router, indexes.router, jobs.router, conversations.router):
+        app.include_router(router)
     instrument_fastapi(app)
     return app

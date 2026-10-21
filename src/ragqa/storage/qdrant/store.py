@@ -160,11 +160,16 @@ class ChunkStore:
         )
 
     async def delete_version(self, index: Index, version_id: uuid.UUID) -> None:
+        if not await self._client.collection_exists(index.collection):
+            return
         await self._client.delete(
             index.collection, points_selector=models.Filter(must=_match(version_id=str(version_id)))
         )
 
     async def delete_document(self, index: Index, document_id: uuid.UUID) -> None:
+        # An index whose collection was never created has nothing to delete.
+        if not await self._client.collection_exists(index.collection):
+            return
         await self._client.delete(
             index.collection,
             points_selector=models.Filter(must=_match(document_id=str(document_id))),
