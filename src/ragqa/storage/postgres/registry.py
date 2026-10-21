@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
 from ragqa.domain.conversation import ChatMessage, NewMessage, StoredMessage, ToolCall
 from ragqa.domain.indexes import Index, IndexConfig, collection_for
 from ragqa.domain.jobs import IngestJob, JobStatus
+from ragqa.domain.retrieval import KnownDocument, KnownValues
 from ragqa.storage.postgres.models import (
     Conversation,
     Document,
@@ -408,6 +409,45 @@ class Registry:
             return [
                 BuildInfo(name, JobStatus(b.status), b.chunk_count, b.built_at) for name, b in rows
             ]
+
+    async def known_filter_values(self) -> KnownValues:
+        """Values Self-Query may use (ADR-0008): distinct metadata of the latest version of
+        each live document, and every document title, tombstones included."""
+        meta = Version.doc_metadata
+        latest = (
+            select(Version.id)
+            .join(Document, Document.latest_version_id == Version.id)
+            .where(Document.deleted_at.is_(None))
+        )
+
+        async def distinct(column: Any) -> tuple[str, ...]:
+            rows = await session.scalars(
+                select(column)
+                .select_from(Version)
+                .where(Version.id.in_(latest), column.is_not(None))
+                .distinct()
+                .order_by(column)
+            )
+            return tuple(rows)
+
+        async with self._sessions() as session:
+            tag_rows = await session.execute(
+                text(
+                    "SELECT DISTINCT t FROM versions v "
+                    "JOIN documents d ON d.latest_version_id = v.id AND d.deleted_at IS NULL, "
+                    "jsonb_array_elements_text("
+                    "CASE WHEN jsonb_typeof(v.metadata->'tags') = 'array' "
+                    "THEN v.metadata->'tags' ELSE '[]'::jsonb END) AS t ORDER BY t"
+                )
+            )
+            documents = await session.scalars(select(Document).order_by(Document.title))
+            return KnownValues(
+                authors=await distinct(meta["author"].astext),
+                doc_types=await distinct(meta["doc_type"].astext),
+                tags=tuple(r[0] for r in tag_rows),
+                languages=await distinct(meta["language"].astext),
+                documents=tuple(KnownDocument(d.id, d.title, d.deleted_at) for d in documents),
+            )
 
     # --- Deletion (Flow 7)
 

@@ -22,10 +22,18 @@ class Settings(BaseSettings):
     embedder_url: str = "http://localhost:8080"
     litellm_url: str = "http://localhost:4000"
     litellm_api_key: SecretStr | None = None
+    # LiteLLM alias used by every LLM stage unless a request overrides it (ADR-0019).
+    default_model: str = "haiku-5.5"
     llm_timeout_s: float = 60.0
     llm_max_retries: int = 2  # the openai client retries 408, 409, 429 and 5xx by itself
     mlflow_tracking_uri: str = "http://localhost:5000"
     files_dir: Path = Path("data/files")
+
+    # Reranker (ADR-0023). Unset means `rerank.enabled` is rejected on this deployment.
+    reranker_url: str | None = None
+    # `POST /query` may return the whole pipeline state (stage outputs, prompts, chunk texts)
+    # when asked. The evaluation runner needs it; leave it off elsewhere.
+    allow_query_debug: bool = False
 
     # Documents
     max_upload_bytes: int = 20 * 1024 * 1024

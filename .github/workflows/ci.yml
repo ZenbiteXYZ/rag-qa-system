@@ -51,7 +51,7 @@ jobs:
       - name: Validate Compose
         run: |
           docker compose -f deploy/docker-compose.yml config -q
-          docker compose -f deploy/docker-compose.yml --profile ml --profile obs config -q
+          docker compose -f deploy/docker-compose.yml --profile ml --profile obs --profile rerank config -q
       - name: Build app image
         run: docker build -f deploy/Dockerfile -t ragqa-app:ci .
 

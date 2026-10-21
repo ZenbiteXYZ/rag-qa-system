@@ -7,13 +7,14 @@ are written with `is_latest=false` and flipped by `set_latest` after Postgres co
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient, models
 
 from ragqa.domain.documents import DocumentMetadata, EmbeddedChunk
 from ragqa.domain.indexes import Index
+from ragqa.domain.retrieval import MetadataFilter, RetrievalQuery, RetrievedChunk
 
 DENSE = "dense"
 SPARSE = "bm25"
@@ -29,6 +30,7 @@ PAYLOAD_INDEXES = {
     "document_id": models.PayloadSchemaType.KEYWORD,
     "version_id": models.PayloadSchemaType.KEYWORD,
     "version": models.PayloadSchemaType.INTEGER,
+    "chunk_index": models.PayloadSchemaType.INTEGER,
     "is_latest": models.PayloadSchemaType.BOOL,
     "doc_type": models.PayloadSchemaType.KEYWORD,
     "tags": models.PayloadSchemaType.KEYWORD,
@@ -76,8 +78,65 @@ def chunk_payload(ref: VersionRef, embedded: EmbeddedChunk) -> dict[str, Any]:
         "start": chunk.start,
         "end": chunk.end,
         "has_code": chunk.has_code,
+        "token_count": chunk.token_count,
         "text": chunk.text,
     }
+
+
+def _rfc3339(day: date) -> datetime:
+    return datetime.combine(day, time())
+
+
+def search_filter(version: int | None, filters: MetadataFilter) -> models.Filter:
+    """Latest versions only, or exactly `version`, plus the document-level filters."""
+    must: list[models.Condition] = []
+    if version is None:
+        must += _match(is_latest=True)
+    else:
+        must += _match(version=version)
+    if filters.document_ids:
+        ids = [str(i) for i in filters.document_ids]
+        must.append(models.FieldCondition(key="document_id", match=models.MatchAny(any=ids)))
+    if filters.tags:
+        must.append(
+            models.FieldCondition(key="tags", match=models.MatchAny(any=list(filters.tags)))
+        )
+    for field in ("doc_type", "author", "language"):
+        value = getattr(filters, field)
+        if value is not None:
+            must += _match(**{field: value})
+    if filters.date_from or filters.date_to:
+        must.append(
+            models.FieldCondition(
+                key="doc_date",
+                range=models.DatetimeRange(
+                    gte=_rfc3339(filters.date_from) if filters.date_from else None,
+                    lte=_rfc3339(filters.date_to) if filters.date_to else None,
+                ),
+            )
+        )
+    return models.Filter(must=must)
+
+
+def retrieved_chunk(
+    point_id: Any, payload: dict[str, Any], score: float, *, neighbor: bool = False
+) -> RetrievedChunk:
+    return RetrievedChunk(
+        point_id=str(point_id),
+        document_id=uuid.UUID(payload["document_id"]),
+        version_id=uuid.UUID(payload["version_id"]),
+        version=payload["version"],
+        title=payload["title"],
+        section_path=tuple(payload["section_path"]),
+        chunk_index=payload["chunk_index"],
+        start=payload["start"],
+        end=payload["end"],
+        text=payload["text"],
+        has_code=payload["has_code"],
+        token_count=payload.get("token_count"),
+        is_neighbor=neighbor,
+        score=score,
+    )
 
 
 def _match(**conditions: Any) -> list[models.Condition]:
@@ -174,6 +233,80 @@ class ChunkStore:
             index.collection,
             points_selector=models.Filter(must=_match(document_id=str(document_id))),
         )
+
+    async def search(
+        self, index: Index, query: RetrievalQuery, dense_vector: Sequence[float] | None
+    ) -> list[RetrievedChunk]:
+        """Dense, sparse (BM25) or hybrid search over the latest versions or one version
+        (ADR-0018). Hybrid is one query: a prefetch branch per vector, fused by RRF."""
+        flt = search_filter(query.version, query.filters)
+
+        def dense_branch() -> list[float]:
+            if dense_vector is None:
+                raise ValueError(f"mode {query.mode} needs a dense vector")
+            return list(dense_vector)
+
+        def sparse_branch() -> models.Document:
+            if not index.sparse_model:
+                raise ValueError(f"index {index.name} has no sparse vector")
+            return models.Document(text=query.sparse_text or "", model=index.sparse_model)
+
+        if query.mode == "dense":
+            response = await self._client.query_points(
+                index.collection,
+                query=dense_branch(),
+                using=DENSE,
+                query_filter=flt,
+                limit=query.top_k,
+                with_payload=True,
+            )
+        elif query.mode == "sparse":
+            response = await self._client.query_points(
+                index.collection,
+                query=sparse_branch(),
+                using=SPARSE,
+                query_filter=flt,
+                limit=query.top_k,
+                with_payload=True,
+            )
+        else:
+            response = await self._client.query_points(
+                index.collection,
+                prefetch=[
+                    models.Prefetch(
+                        query=dense_branch(), using=DENSE, filter=flt, limit=query.branch_limit
+                    ),
+                    models.Prefetch(
+                        query=sparse_branch(), using=SPARSE, filter=flt, limit=query.branch_limit
+                    ),
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=query.top_k,
+                with_payload=True,
+            )
+        return [retrieved_chunk(p.id, p.payload or {}, p.score) for p in response.points]
+
+    async def get_chunks(
+        self, index: Index, version_id: uuid.UUID, chunk_indexes: Sequence[int]
+    ) -> list[RetrievedChunk]:
+        """Chunks of one version by position, in order. Missing positions are skipped."""
+        if not chunk_indexes:
+            return []
+        points, _ = await self._client.scroll(
+            index.collection,
+            scroll_filter=models.Filter(
+                must=[
+                    *_match(version_id=str(version_id)),
+                    models.FieldCondition(
+                        key="chunk_index", match=models.MatchAny(any=list(chunk_indexes))
+                    ),
+                ]
+            ),
+            limit=len(chunk_indexes),
+            with_payload=True,
+        )
+        chunks = [retrieved_chunk(p.id, p.payload or {}, 0.0, neighbor=True) for p in points]
+        return sorted(chunks, key=lambda c: c.chunk_index)
 
     async def count(self, index: Index, **conditions: Any) -> int:
         result = await self._client.count(

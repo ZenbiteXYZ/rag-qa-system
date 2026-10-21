@@ -4,6 +4,7 @@ Publishing fails (nothing listens on the broker URL), which is the case the repu
 exists for: the upload still succeeds and the job stays `queued`.
 """
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import timedelta
@@ -19,11 +20,16 @@ from ragqa.api.main import create_app
 from ragqa.api.resources import Resources
 from ragqa.domain.conversation import ChatMessage, NewMessage
 from ragqa.domain.indexes import IndexConfig
+from ragqa.domain.pipeline import PipelineConfig
 from ragqa.ingestion.service import IngestionService
+from ragqa.query.retriever import QdrantRetriever
+from ragqa.query.runner import QueryDeps
+from ragqa.query.service import QueryService
 from ragqa.settings import Settings
 from ragqa.storage.postgres.registry import Registry
 from tests.integration.conftest import POSTGRES_DSN, QDRANT_URL
 from tests.integration.fakes import DIMENSIONS, FakeEmbedder, make_chunkers, word_counter_factory
+from tests.query_fakes import FakeLLM, self_query_json
 
 pytestmark = [
     pytest.mark.integration,
@@ -47,6 +53,7 @@ async def app(registry: Registry, tmp_path: Path) -> AsyncIterator[FastAPI]:
         files_dir=tmp_path,
         env="test",
         service_name="ragqa-test",
+        allow_query_debug=True,
     )
     application = create_app(settings)
     resources = Resources.create(settings)
@@ -227,3 +234,118 @@ async def test_conversation_messages_are_readable(app: FastAPI, client: httpx.As
     assert [m["message"]["role"] for m in body] == ["user", "assistant"]
     assert body[1]["trace_id"] == "tr-1"
     assert body[1]["citations"] == [{"title": "Drain"}]
+
+
+# --- Question answering over really ingested documents ---
+
+DRAIN = b"# Drain\n\nUse kubectl drain to empty a node.\n\nIt evicts the pods.\n"
+RBAC = b"# RBAC\n\nRoles grant permissions to subjects.\n\nBindings attach roles.\n"
+
+
+async def _upload(
+    client: httpx.AsyncClient, name: str, data: bytes, title: str, author: str
+) -> dict[str, Any]:
+    response = await client.post(
+        "/documents",
+        files={"file": (name, data)},
+        data={"title": title, "metadata": json.dumps({"author": author, "tags": ["ops"]})},
+    )
+    assert response.status_code == 202, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+async def _ingest_all(app: FastAPI) -> None:
+    registry = app.state.resources.backends.registry
+    for job in await registry.stuck_jobs(timedelta(0)):
+        await _service(app).ingest(job)
+
+
+def _qa(app: FastAPI, llm: FakeLLM) -> None:
+    backends = app.state.resources.backends
+    deps = QueryDeps(
+        llm=llm,
+        retriever=QdrantRetriever(backends.chunk_store, backends.embedder),
+        known_values=backends.registry.known_filter_values,
+        token_counter=backends.token_counter,
+    )
+    app.state.resources.query_service = QueryService(
+        backends.registry, deps, PipelineConfig(default_model="haiku-5.5")
+    )
+
+
+async def _ask(client: httpx.AsyncClient, **body: Any) -> dict[str, Any]:
+    response = await client.post(
+        "/query",
+        json={"question": "Use kubectl drain to empty a node.", "debug": True, **body},
+    )
+    assert response.status_code == 200, response.text
+    result: dict[str, Any] = response.json()
+    return result
+
+
+async def test_question_answering_over_ingested_documents(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    await _create_index(client)
+    drain = await _upload(client, "drain.md", DRAIN, "Drain a node", "I. Petrov")
+    rbac = await _upload(client, "rbac.md", RBAC, "RBAC", "A. Ivanova")
+    await _ingest_all(app)
+    llm = FakeLLM(texts=["Use kubectl drain [1]."])
+    _qa(app, llm)
+
+    # Dense: the query text equals a chunk, so the fake embedder finds it exactly.
+    body = await _ask(client)
+    assert body["status"] == "answer" and body["citations"][0]["title"] == "Drain a node"
+    assert body["citations"][0]["document_id"] == drain["document_id"]
+    assert body["debug"]["candidates"][0]["text"] == "Use kubectl drain to empty a node."
+    assert [t["stage"] for t in body["debug"]["timings"]] == ["retrieve", "context", "generate"]
+
+    # Hybrid: the BM25 branch finds a chunk by its words.
+    hybrid = await _ask(
+        client,
+        question="roles permissions subjects",
+        config={"retrieve": {"mode": "hybrid", "top_k": 2}},
+    )
+    assert {c["title"] for c in hybrid["debug"]["candidates"]} >= {"RBAC"}
+
+    # The conversation was stored with the citation, and can be read back.
+    messages = (await client.get(f"/conversations/{body['conversation_id']}/messages")).json()
+    assert [m["message"]["role"] for m in messages] == ["user", "assistant"]
+    assert messages[1]["citations"][0]["title"] == "Drain a node"
+
+    # Self-Query against the real known values: "Petrov" becomes "I. Petrov", which limits the
+    # search to the drain document.
+    llm.structured = [self_query_json(author="Petrov", semantic_query="rbac roles")]
+    filtered = await _ask(
+        client, config={"self_query": {"enabled": True}}, question="rbac roles by Petrov"
+    )
+    assert filtered["debug"]["resolved_filters"]["author"] == "I. Petrov"
+    assert {c["document_id"] for c in filtered["debug"]["candidates"]} == {drain["document_id"]}
+    assert rbac["document_id"] not in {c["document_id"] for c in filtered["debug"]["candidates"]}
+
+    # A deleted document is reported, not searched.
+    assert (await client.delete(f"/documents/{rbac['document_id']}")).status_code == 202
+    llm.structured = [self_query_json(document_title="RBAC")]
+    gone = await _ask(client, config={"self_query": {"enabled": True}}, question="about RBAC")
+    assert gone["status"] == "document_deleted" and gone["document_title"] == "RBAC"
+
+
+async def test_version_selection_in_queries(app: FastAPI, client: httpx.AsyncClient) -> None:
+    await _create_index(client)
+    first = await _upload(client, "drain.md", DRAIN, "Drain a node", "I. Petrov")
+    await _ingest_all(app)
+    changed = DRAIN.replace(b"evicts the pods", b"evicts every pod gracefully")
+    response = await client.post(
+        f"/documents/{first['document_id']}/versions", files={"file": ("drain.md", changed)}
+    )
+    assert response.status_code == 202
+    await _ingest_all(app)
+    _qa(app, FakeLLM(texts=["ok [1]"]))
+
+    latest = await _ask(client, question="It evicts every pod gracefully")
+    pinned = await _ask(client, question="It evicts the pods.", version=1)
+
+    assert {c["version"] for c in latest["debug"]["candidates"]} == {2}
+    assert {c["version"] for c in pinned["debug"]["candidates"]} == {1}
+    assert pinned["debug"]["candidates"][0]["text"] == "It evicts the pods."

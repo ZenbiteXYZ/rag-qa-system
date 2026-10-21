@@ -8,13 +8,13 @@ up:  ## Start services. Extra profiles: make up PROFILES="ml obs"
 	$(COMPOSE) $(PROFILE_FLAGS) up -d --build
 
 down:  ## Stop services; volumes are kept
-	$(COMPOSE) --profile ml --profile obs down
+	$(COMPOSE) --profile ml --profile obs --profile rerank down
 
 logs:  ## Follow logs: make logs S=api
 	$(COMPOSE) $(PROFILE_FLAGS) logs -f $(S)
 
 ps:
-	$(COMPOSE) --profile ml --profile obs ps
+	$(COMPOSE) --profile ml --profile obs --profile rerank ps
 
 test:
 	uv run pytest

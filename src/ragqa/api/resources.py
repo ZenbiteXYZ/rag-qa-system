@@ -8,6 +8,10 @@ import httpx
 from aio_pika.abc import AbstractRobustConnection
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ragqa.domain.pipeline import PipelineConfig
+from ragqa.embeddings.tokens import hf_token_counter_factory
+from ragqa.query.runner import QueryDeps
+from ragqa.query.service import QueryService
 from ragqa.settings import Settings
 from ragqa.wiring import Backends
 from ragqa.worker.publisher import JobPublisher
@@ -42,6 +46,7 @@ class Resources:
     http: httpx.AsyncClient  # short timeout, for readiness probes
     amqp: AmqpConnector
     publisher: JobPublisher
+    query_service: QueryService
 
     @property
     def engine(self) -> AsyncEngine:
@@ -50,11 +55,25 @@ class Resources:
     @classmethod
     def create(cls, settings: Settings) -> "Resources":
         amqp = AmqpConnector(settings.rabbitmq_url, settings.service_name)
+        backends = Backends.create(settings, token_counter=hf_token_counter_factory(settings))
+        deps = QueryDeps(
+            llm=backends.llm,
+            retriever=backends.retriever,
+            known_values=backends.registry.known_filter_values,
+            token_counter=backends.token_counter,
+            reranker=backends.reranker,
+        )
         return cls(
-            backends=Backends.create(settings),
+            backends=backends,
             http=httpx.AsyncClient(timeout=httpx.Timeout(5.0)),
             amqp=amqp,
             publisher=JobPublisher(amqp.get, Topology.from_settings(settings)),
+            query_service=QueryService(
+                backends.registry,
+                deps,
+                PipelineConfig(default_model=settings.default_model),
+                default_index=settings.default_index,
+            ),
         )
 
     async def close(self) -> None:

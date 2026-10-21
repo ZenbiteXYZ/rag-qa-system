@@ -1,7 +1,8 @@
 """What the retrieve stage asks for and what it gets back (ADR-0007, ADR-0018)."""
 
 import uuid
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -64,4 +65,25 @@ class RetrievedChunk(_Model):
     end: int
     text: str
     has_code: bool
+    token_count: int | None = None  # None for chunks indexed before the payload had it
+    is_neighbor: bool = False  # added by neighbor expansion, not retrieved
     score: float  # comparable only within one query: RRF scores are not similarities
+
+
+@dataclass(frozen=True)
+class KnownDocument:
+    id: uuid.UUID
+    title: str
+    deleted_at: datetime | None
+
+
+@dataclass(frozen=True)
+class KnownValues:
+    """What exists now: values of the latest versions, and every document title including
+    tombstones (story A6)."""
+
+    authors: tuple[str, ...] = ()
+    doc_types: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    languages: tuple[str, ...] = ()
+    documents: tuple[KnownDocument, ...] = ()

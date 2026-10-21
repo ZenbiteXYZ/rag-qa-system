@@ -12,6 +12,8 @@ from structlog.contextvars import get_contextvars
 
 from ragqa.embeddings.tei import EmbedderError, EmbedderUnavailable
 from ragqa.ingestion.errors import UnsupportedFormatError
+from ragqa.llm.types import LLMError, LLMUnavailable
+from ragqa.query.service import QueryRequestError
 from ragqa.storage.postgres.registry import DuplicateIndexError, NotFoundError
 
 
@@ -57,6 +59,9 @@ def _handler(status: int, code: str) -> Callable[[Request, Exception], Awaitable
 
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(NotFoundError, _handler(404, "not_found"))
+    app.add_exception_handler(QueryRequestError, _handler(422, "invalid_query"))
+    app.add_exception_handler(LLMUnavailable, _handler(503, "llm_unavailable"))
+    app.add_exception_handler(LLMError, _handler(502, "llm_error"))
     app.add_exception_handler(DuplicateIndexError, _handler(409, "index_exists"))
     app.add_exception_handler(UnsupportedFormatError, _handler(415, "unsupported_format"))
     app.add_exception_handler(EmbedderError, _handler(502, "embedder_error"))

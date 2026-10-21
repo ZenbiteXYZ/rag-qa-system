@@ -64,10 +64,19 @@ class LLMClient(Protocol):
         model: str,
         max_tokens: int,
         tools: Sequence[ToolSpec] = (),
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> Completion: ...
 
     async def complete_structured(
-        self, messages: Sequence[ChatMessage], schema: type[T], *, model: str, max_tokens: int
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[T],
+        *,
+        model: str,
+        max_tokens: int,
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> tuple[T, Completion]:
         """For Self-Query parsing and the judge: the reply validated against `schema`.
 
@@ -76,7 +85,12 @@ class LLMClient(Protocol):
         ...
 
     def stream(
-        self, messages: Sequence[ChatMessage], *, model: str, max_tokens: int
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str,
+        max_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamEvent]: ...
 
     async def models(self) -> list[str]:

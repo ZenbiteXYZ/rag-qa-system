@@ -45,6 +45,15 @@ def message_to_openai(message: ChatMessage) -> dict[str, Any]:
     return payload
 
 
+def _options(reasoning_effort: str | None, seed: int | None) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if reasoning_effort is not None:
+        options["reasoning_effort"] = reasoning_effort
+    if seed is not None:
+        options["seed"] = seed
+    return options
+
+
 def _wire_messages(messages: Sequence[ChatMessage]) -> list[Any]:
     # `Any` because the SDK's message types are TypedDict unions that plain dicts do not match.
     return [message_to_openai(m) for m in messages]
@@ -126,14 +135,23 @@ class ProxyLLMClient:
         model: str,
         max_tokens: int,
         tools: Sequence[ToolSpec] = (),
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> Completion:
-        extra: dict[str, Any] = {}
+        extra = _options(reasoning_effort, seed)
         if tools:
             extra["tools"] = [tool_to_openai(t) for t in tools]
         return await self._complete(messages, model, max_tokens, extra)
 
     async def complete_structured(
-        self, messages: Sequence[ChatMessage], schema: type[T], *, model: str, max_tokens: int
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[T],
+        *,
+        model: str,
+        max_tokens: int,
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> tuple[T, Completion]:
         """For Self-Query parsing and the judge: the reply validated against `schema`.
 
@@ -143,9 +161,8 @@ class ProxyLLMClient:
             "type": "json_schema",
             "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
         }
-        completion = await self._complete(
-            messages, model, max_tokens, {"response_format": response_format}
-        )
+        extra = _options(reasoning_effort, seed) | {"response_format": response_format}
+        completion = await self._complete(messages, model, max_tokens, extra)
         try:
             return schema.model_validate_json(completion.text), completion
         except ValidationError as exc:
@@ -185,7 +202,12 @@ class ProxyLLMClient:
             return completion
 
     async def stream(
-        self, messages: Sequence[ChatMessage], *, model: str, max_tokens: int
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str,
+        max_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Text deltas, then one `Completion` with the full text and the usage."""
         parts: list[str] = []
@@ -198,6 +220,7 @@ class ProxyLLMClient:
                 messages=_wire_messages(messages),
                 max_completion_tokens=max_tokens,
                 stream=True,
+                **_options(reasoning_effort, None),
                 # Without this the last chunk carries no token counts.
                 stream_options={"include_usage": True},
             )

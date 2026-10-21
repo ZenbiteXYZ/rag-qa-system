@@ -1,10 +1,11 @@
 name: ragqa
 
-# Profiles (ADR-0020):
+# Profiles (ADR-0020, ADR-0023):
 #   default  postgres, qdrant, rabbitmq, mlflow, api, worker
 #   ml       tei (embeddings), litellm (LLM proxy)          large first download
 #   obs      prometheus, grafana, loki, alloy
-# Start everything: docker compose --profile ml --profile obs up -d --build
+#   rerank   tei-rerank (cross-encoder for the rerank stage)   about 2.2 GB first download
+# Start everything: docker compose --profile ml --profile obs --profile rerank up -d --build
 #
 # Compose checks every ${VAR:?} even for services whose profile is off, so all
 # required variables must be set in deploy/.env (see .env.example).
@@ -26,6 +27,9 @@ x-app-env: &app-env
   RAGQA_MLFLOW_EXPERIMENT: ragqa-traces
   RAGQA_TRACING_ENABLED: "true"
   RAGQA_FILES_DIR: /data/files
+  RAGQA_RERANKER_URL: http://tei-rerank:80
+  # Lets the evaluation runner read stage outputs from POST /query. Off unless set in deploy/.env.
+  RAGQA_ALLOW_QUERY_DEBUG: ${RAGQA_ALLOW_QUERY_DEBUG:-false}
   RAGQA_ENV: ${RAGQA_ENV:-dev}
   RAGQA_LOG_LEVEL: ${RAGQA_LOG_LEVEL:-INFO}
   RAGQA_LOG_FORMAT: json
@@ -199,6 +203,21 @@ services:
     logging: *logging
     restart: unless-stopped
 
+  tei-rerank:
+    profiles: [rerank]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
+    # Cross-encoder for the rerank stage (ADR-0023). About 2.2 GB on first start.
+    command:
+      - --model-id=BAAI/bge-reranker-v2-m3
+      - --revision=953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
+      - --port=80
+    volumes:
+      - tei_rerank_models:/data
+    ports:
+      - "127.0.0.1:8081:80"
+    logging: *logging
+    restart: unless-stopped
+
   litellm:
     profiles: [ml]
     image: ghcr.io/berriai/litellm:v1.106.0
@@ -299,6 +318,7 @@ volumes:
   hf_cache:
   mlflow_artifacts:
   tei_models:
+  tei_rerank_models:
   prometheus_data:
   loki_data:
   alloy_data:

@@ -8,7 +8,7 @@ from typing import Literal
 
 from prometheus_client import Counter, Gauge, Histogram
 
-Dependency = Literal["postgres", "qdrant", "rabbitmq", "embedder", "llm", "mlflow"]
+Dependency = Literal["postgres", "qdrant", "rabbitmq", "embedder", "reranker", "llm", "mlflow"]
 JobOutcome = Literal["ready", "retry", "failed", "dead", "malformed"]
 StageOutcome = Literal["ok", "error"]
 

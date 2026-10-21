@@ -36,7 +36,13 @@ class RewriteConfig(_Model):
 class SelfQueryConfig(_Model):
     enabled: bool = False
     model: str | None = None
-    # TODO(author): fuzzy-match threshold and margin for "one clearly best candidate" (ADR-0008)
+    # ADR-0008: an unknown value is replaced when its best match scores at least
+    # `match_threshold` (similarity from 0 to 1) and leads the runner-up by `margin`.
+    # Otherwise matches scoring at least `candidate_floor` are offered to the user.
+    match_threshold: float = Field(default=0.85, ge=0, le=1)
+    margin: float = Field(default=0.1, ge=0, le=1)
+    candidate_floor: float = Field(default=0.5, ge=0, le=1)
+    max_candidates: int = Field(default=5, gt=0)
 
 
 class HydeConfig(_Model):
@@ -45,6 +51,7 @@ class HydeConfig(_Model):
 
 
 class RetrieveConfig(_Model):
+    enabled: bool = True  # False is the closed-book control (ML_DESIGN E0b)
     mode: SearchMode = "dense"  # the baseline is dense only (ADR-0019)
     branch_limit: int = Field(default=20, gt=0)
     top_k: int = Field(default=10, gt=0)
@@ -53,20 +60,25 @@ class RetrieveConfig(_Model):
 class RerankConfig(_Model):
     enabled: bool = False
     top_n: int = Field(default=5, gt=0)
-    # TODO(author): reranker model and how it is served
 
 
 class ContextConfig(_Model):
     max_tokens: int = Field(default=4000, gt=0)
+    # Chunks before and after each selected one, from the same version (0 = none).
+    neighbors: int = Field(default=0, ge=0)
 
 
 class GenerateConfig(_Model):
+    enabled: bool = True  # False stops after context, for retrieval-only runs (level 1)
     model: str | None = None
     max_tokens: int = Field(default=1024, gt=0)
 
 
 class PipelineConfig(_Model):
     default_model: str
+    # The same in every compared configuration (ML_DESIGN section 6). Sent to the LLM as
+    # `reasoning_effort`; None leaves the model's default.
+    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = "medium"
     history: HistoryConfig = HistoryConfig()
     rewrite: RewriteConfig = RewriteConfig()
     self_query: SelfQueryConfig = SelfQueryConfig()
@@ -103,6 +115,28 @@ class Citation(_Model):
     quote: str
 
 
+class Substitution(_Model):
+    """What happened to one value that Self-Query extracted (ADR-0008, ML_DESIGN section 4)."""
+
+    field: str
+    value: str
+    outcome: Literal["exact", "substituted", "asked", "unresolved"]
+    resolved: str | None = None
+
+
+class StageTiming(_Model):
+    stage: str
+    ms: float
+
+
+class LlmCallRecord(_Model):
+    stage: str
+    model: str  # the alias
+    resolved_model: str
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
 Outcome = Literal["answer", "needs_clarification", "document_deleted"]
 
 
@@ -124,7 +158,10 @@ class PipelineState(_Model):
     # self_query
     semantic_query: str | None = None  # the question without its filter cues
     parsed_filters: MetadataFilter | None = None  # as the LLM produced them
+    parsed_document_title: str | None = None  # a document the question names
     resolved_filters: MetadataFilter | None = None  # after checking known values (ADR-0008)
+    resolved_document_title: str | None = None
+    substitutions: tuple[Substitution, ...] = ()
     clarification: Clarification | None = None
     deleted_document: DeletedDocument | None = None
     # hyde
@@ -136,11 +173,18 @@ class PipelineState(_Model):
     # context
     context_chunks: tuple[RetrievedChunk, ...] = ()
     # generate
+    prompt: str | None = None  # the final user message sent to the generator, for run records
     answer: str | None = None
-    citations: tuple[Citation, ...] = ()
+    abstained: bool = False  # the answer is the refusal sentence
+    citation_numbers: tuple[int, ...] = ()  # every [n] in the answer, valid or not
+    citations: tuple[Citation, ...] = ()  # the valid ones
 
     # Any stage: notes for the trace and the response, like a filter value substitution
     warnings: tuple[str, ...] = ()
+    degraded: tuple[str, ...] = ()  # optional stages that failed and were skipped
+    # Written by the runner and by LLM stages, for the system metrics.
+    timings: tuple[StageTiming, ...] = ()
+    llm_calls: tuple[LlmCallRecord, ...] = ()
 
     @property
     def outcome(self) -> Outcome | None:

@@ -270,9 +270,9 @@ A fixed sequence of stages, each switchable by config (ADR-0010). A stage is one
 
 Stages in order: query rewriting, Self-Query, HyDE, retrieve (`dense`, `sparse` or `hybrid`), rerank, context assembly, generate. Each can be turned on or off per request (stories D2 to D6).
 
-Types are in `src/ragqa/domain/pipeline.py` (state and config), `domain/retrieval.py` (retrieval query and chunks) and `domain/conversation.py` (messages). The `Stage` protocol is in `query/stages/base.py` and the runner is `query/runner.py`.
+Types are in `src/ragqa/domain/pipeline.py` (state and config), `domain/retrieval.py` (retrieval query and chunks) and `domain/conversation.py` (messages). The `Stage` protocol is in `query/stages/base.py`, the stages are in `query/stages/`, the runner and `build_stages` are in `query/runner.py`, prompts (with `PROMPT_VERSION`) in `query/prompts.py`, and `query/service.py` runs one request end to end.
 
-**Stage interface.** A stage has a `name`, the state fields it `reads` and `writes`, `enabled(config)`, and `async run(state) -> state`. `PipelineState` is frozen, so a stage returns `state.model_copy(update=...)` with only its own fields changed. The runner skips disabled stages, runs each enabled one inside `traced_stage` (one span, one latency metric), and stops as soon as `state.outcome` is set, because a clarification or a deleted document ends the request early.
+**Stage interface.** A stage has a `name`, the state fields it `reads` and `writes`, `optional`, `enabled(config)`, and `async run(state) -> state`. `PipelineState` is frozen, so a stage returns `state.model_copy(update=...)` with only its own fields changed. The runner skips disabled stages, runs each enabled one inside `traced_stage` (one span, one latency metric), and stops as soon as `state.outcome` is set, because a clarification or a deleted document ends the request early. The runner also checks that a stage changed no field outside its `writes` (`StageContractError`, a bug), and records each stage's time in `state.timings`. An **optional** stage (rewrite, Self-Query, HyDE, rerank) that raises is skipped: the request continues, `state.degraded` names the stage and a warning explains it, so the evaluation can count it. A required stage (retrieve, context, generate) that raises fails the request.
 
 **State fields and their writers:**
 
@@ -280,14 +280,14 @@ Types are in `src/ragqa/domain/pipeline.py` (state and config), `domain/retrieva
 |-------|------------|-------|
 | `question`, `index`, `user_filters`, `version`, `history`, `config`, `trace_id` | API | The request. Stages only read them. `history` holds the earlier messages of the conversation, oldest first, and not the current question |
 | `rewritten_query` | rewrite | Standalone form of the question, built from the question and the text turns of `history` |
-| `semantic_query`, `parsed_filters` | self_query | The question without its filter cues, and the filters as the LLM produced them |
-| `resolved_filters`, `clarification`, `deleted_document` | self_query | After checking values against the known ones (ADR-0008). `clarification` and `deleted_document` end the pipeline |
+| `semantic_query`, `parsed_filters`, `parsed_document_title` | self_query | The question without its filter cues, and the filters (and a named document) as the LLM produced them |
+| `resolved_filters`, `resolved_document_title`, `substitutions`, `clarification`, `deleted_document` | self_query | After checking values against the known ones (ADR-0008); `substitutions` records the outcome of every value (exact, substituted, asked, unresolved). `clarification` and `deleted_document` end the pipeline |
 | `hypothetical_document` | hyde | |
 | `candidates` | retrieve | At most `retrieve.top_k` chunks, best first |
 | `ranked` | rerank | The best `rerank.top_n` of `candidates`, reordered |
 | `context_chunks` | context | The chunks that fit `context.max_tokens` |
-| `answer`, `citations` | generate | |
-| `warnings` | any stage | Notes such as a filter value that was substituted |
+| `prompt`, `answer`, `abstained`, `citation_numbers`, `citations` | generate | `prompt` is the final user message, for run records. `abstained` is true when the answer starts with the fixed refusal sentence. `citation_numbers` holds every `[n]` of the answer, `citations` the ones that point at an existing excerpt |
+| `warnings`, `degraded`, `timings`, `llm_calls` | any stage, runner | Notes (a substituted filter value), skipped optional stages, time per stage, and per LLM call the alias, the resolved model and the tokens |
 
 `outcome` is derived from the fields above (`document_deleted`, `needs_clarification` or `answer`), so no stage sets it.
 
@@ -298,11 +298,21 @@ Types are in `src/ragqa/domain/pipeline.py` (state and config), `domain/retrieva
 - Chunk counts: `branch_limit` per prefetch branch in hybrid mode, `top_k` after fusion, `top_n` after reranking.
 - Token budget: the context stage keeps chunks while their `token_count` sum stays within `context.max_tokens`, counted with the embedder tokenizer, so the budget for the generator's own tokenizer needs a margin.
 
+**Stages in detail.**
+- *Rewrite* asks the LLM for a standalone query from the question and the text turns of the history (always, when enabled, also for the first message of a conversation).
+- *Self-Query* asks for structured output (semantic query, `doc_type`, `tags`, `author`, `language`, `date_from`, `date_to`, `document_title`) and then checks every value against what exists (`Registry.known_filter_values`, `query/filters.py`, ADR-0008). A value is exact (case and punctuation ignored), replaced when its best match scores at least `match_threshold` and leads the runner-up by `margin`, offered to the user when matches reach `candidate_floor` (response `needs_clarification`), or dropped when nothing is close. A name that is a whole word of a known value ("Petrov" in "I. Petrov") scores at least 0.9. A document title that names a tombstone ends the request with `document_deleted`. User filters win over extracted ones, field by field.
+- *HyDE* asks for a short passage that would answer the question; it feeds the dense branch only.
+- *Retrieve* builds one `RetrievalQuery` (mode, texts per branch, filters, version, limits) for `Retriever.search`. Without a `version` only `is_latest` points match; with one, exactly that version number of each document.
+- *Rerank* scores every candidate with a cross-encoder (ADR-0023) and keeps the best `top_n`.
+- *Context* takes `ranked`, else `candidates`, in order, optionally adds `neighbors` chunks around each from the same version, and keeps whole chunks while the token sum fits `max_tokens` (the first chunk is always kept).
+- *Generate* sends a system prompt, the recent text turns and one user message with the numbered excerpts and the question. The model cites with `[n]` and answers with a fixed sentence when the excerpts do not contain the answer. With no retrieved context it answers with that sentence without calling the LLM. With `retrieve.enabled=false` it is the closed-book control: no excerpts, a different system prompt. With `generate.enabled=false` the pipeline stops after context (retrieval-only runs).
+- Every LLM stage uses `config.reasoning_effort` (default `medium`) and its own `model` alias (default `default_model`).
+
 **Hybrid retrieval** (ADR-0018): one Qdrant query with a `prefetch` branch per vector (`dense` and `bm25`, each with its own limit), merged by Reciprocal Rank Fusion. The text used differs per branch:
 - Dense branch: the HyDE document if present, else the Self-Query semantic query, else the rewritten query, else the question.
 - Sparse branch: the Self-Query semantic query, else the rewritten query, else the question. Never the HyDE text. This is a hypothesis to test on the golden set.
 
-Retrieve config: `mode` (`dense`, `sparse`, `hybrid`), `fusion`, per-branch limit, final `top_k`. The evaluation baseline stays dense only.
+Retrieve config: `mode` (`dense`, `sparse`, `hybrid`), per-branch limit, final `top_k`. Fusion is always RRF. The evaluation baseline stays dense only.
 
 Query sequence (stages in brackets are optional and switched by config):
 
@@ -368,8 +378,8 @@ FastAPI generates the OpenAPI schema from Pydantic models. The exported `openapi
 | GET | `/jobs/{id}` | Ingestion job status | | `status`, `attempts`, `error` |
 | GET | `/indexes` | List available indexes | | list of index configs |
 | POST | `/indexes` | Create an index (collection in Qdrant plus a registry row) | `name`, `dense_model`, `dense_distance` (optional), `chunking_strategy`, `chunking_params` | 201: index config |
-| POST | `/query` | Ask a question | `question`, `index`, `filters`, `version`, `conversation_id` (optional) or inline `history` (optional, for stateless clients), pipeline config (stage toggles) | one of three responses below |
-| POST | `/query/stream` | Same as `/query`, streamed over SSE | same as `/query` | `text/event-stream`: token events, then a final event with the same union as `/query` |
+| POST | `/query` | Ask a question | `question`, `index` (optional, as for uploads), `filters`, `version`, `conversation_id` or inline `history` (optional, exclusive), `config` (overrides), `debug` | one of three responses below |
+| POST | `/query/stream` | Same as `/query`, streamed over SSE | same as `/query` | `text/event-stream`: `stage` events, `token` events, then a `final` event with the same union as `/query` |
 | GET | `/conversations/{id}/messages` | Read a conversation | | messages, oldest first, with citations and `trace_id` |
 | GET | `/health` | Liveness and dependency check | | status |
 
@@ -386,7 +396,13 @@ FastAPI generates the OpenAPI schema from Pydantic models. The exported `openapi
 
 **Conversations:** without `conversation_id` the request starts a new conversation, and the response returns its id (a request with inline `history` is stateless and stores nothing). The API reads the history, runs the pipeline and then appends the user and assistant messages (ADR-0002). A request that ends in `needs_clarification` or `document_deleted` stores the user message and a short assistant message saying so, so the follow-up that resends the filter value has context. `GET /conversations/{id}/messages` returns the stored messages with their citations and `trace_id`.
 
-TODO(author): the SSE event names and payloads, and what happens to documents when an index is deleted (no delete endpoint yet).
+**Per-request config.** `config` in the body overrides the server default (`PipelineConfig`, `default_model` from `RAGQA_DEFAULT_MODEL`) field by field, for example `{"retrieve": {"mode": "hybrid"}, "rewrite": {"enabled": true}}`. Unknown or invalid fields are 422 `invalid_query`, as is enabling reranking on a deployment without a reranker, or a sparse mode on an index without a sparse vector. `history` (stateless) and `conversation_id` are mutually exclusive. A request whose generation is switched off returns `status: "retrieved"` with the number of context chunks.
+
+**Debug output.** With `RAGQA_ALLOW_QUERY_DEBUG=true` a request may set `debug: true` and get the whole `PipelineState` (stage outputs, candidates with spans and scores, the final prompt, timings, tokens per LLM call) in `debug`. The evaluation runner uses it to record every stage output without depending on trace search. Without the setting, `debug: true` is 403.
+
+**Streaming.** `POST /query/stream` takes the same body and answers with server-sent events: `stage` (`stage`, `ms`) for each stage before generation, `token` (`text`) for each piece of the answer, and one `final` whose data is the `/query` response. Request errors (unknown index, bad config) are plain HTTP errors before the stream starts.
+
+TODO(author): what happens to documents when an index is deleted (no delete endpoint yet).
 
 ## 6. Evaluation runner
 

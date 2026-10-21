@@ -218,3 +218,19 @@ async def test_models_lists_aliases_sorted() -> None:
         return httpx.Response(200, json={"object": "list", "data": data})
 
     assert await client_with(handler).models() == ["a", "b"]
+
+
+async def test_reasoning_effort_and_seed_are_sent_only_when_set() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=chat_response({"role": "assistant", "content": "ok"}))
+
+    client = client_with(handler)
+    messages = [ChatMessage(role="user", content="hi")]
+    await client.complete(messages, model="m", max_tokens=5)
+    await client.complete(messages, model="m", max_tokens=5, reasoning_effort="low", seed=7)
+
+    assert "reasoning_effort" not in bodies[0] and "seed" not in bodies[0]
+    assert bodies[1]["reasoning_effort"] == "low" and bodies[1]["seed"] == 7
