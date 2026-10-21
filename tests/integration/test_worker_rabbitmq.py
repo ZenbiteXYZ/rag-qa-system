@@ -78,7 +78,13 @@ async def _get_dead(
 
 
 def _job() -> IngestJob:
-    return IngestJob(job_id=uuid.uuid4(), document_id=uuid.uuid4(), version=1, index="idx")
+    return IngestJob(
+        job_id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        version_id=uuid.uuid4(),
+        version=1,
+        index_id=1,
+    )
 
 
 async def test_transient_failures_retry_then_dead_letter(channel: AbstractChannel) -> None:

@@ -109,7 +109,7 @@ class IngestConsumer:
     async def _run(
         self, job: IngestJob, message: AbstractIncomingMessage, attempt: int
     ) -> JobOutcome:
-        log.info("job_started", index=job.index, redelivered=message.redelivered)
+        log.info("job_started", index_id=job.index_id, redelivered=message.redelivered)
         try:
             await self._handler(job)
         except PermanentIngestionError as exc:

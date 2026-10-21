@@ -13,4 +13,4 @@ async def ingest_document(job: IngestJob) -> None:
     (ADR-0011, ADR-0014). Raise `PermanentIngestionError` for inputs that retrying
     cannot fix.
     """
-    log.warning("ingest_stub_called", index=job.index)
+    log.warning("ingest_stub_called", index_id=job.index_id)

@@ -22,8 +22,15 @@ class Settings(BaseSettings):
     embedder_url: str = "http://localhost:8080"
     litellm_url: str = "http://localhost:4000"
     litellm_api_key: SecretStr | None = None
+    llm_timeout_s: float = 60.0
+    llm_max_retries: int = 2  # the openai client retries 408, 409, 429 and 5xx by itself
     mlflow_tracking_uri: str = "http://localhost:5000"
     files_dir: Path = Path("data/files")
+
+    # Embedder (ADR-0012). The base model wants this prefix on queries and none on passages.
+    embedder_query_prefix: str = "query: "
+    embedder_passage_prefix: str = ""
+    embedder_batch_size: int = 32
 
     # Observability
     service_name: str = "ragqa-api"

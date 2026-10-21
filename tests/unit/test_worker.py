@@ -15,7 +15,13 @@ TOPOLOGY = Topology(prefix="test.ingest", retry_delays_s=(1.0, 2.0, 4.0))
 
 
 def _job() -> IngestJob:
-    return IngestJob(job_id=uuid.uuid4(), document_id=uuid.uuid4(), version=1, index="idx")
+    return IngestJob(
+        job_id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        version_id=uuid.uuid4(),
+        version=1,
+        index_id=1,
+    )
 
 
 class FakeMessage:
