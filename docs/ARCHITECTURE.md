@@ -199,9 +199,14 @@ Runs in the worker. A job is delivered through RabbitMQ and processed in stages,
 `file bytes` -> `ParsedDocument` -> `list[Chunk]` -> `list[EmbeddedChunk]` -> upsert
 
 - **Parsers** for `.md` and `.docx` produce the same `ParsedDocument`, so later stages do not care about the format (ADR-0001, ADR-0021). They live in `src/ragqa/ingestion/parsers/` behind a registry keyed by file extension, which the API also uses to reject unsupported uploads. Markdown text is close to the rendered page: front matter becomes metadata, inline markup and Hugo shortcodes are removed (a `glossary_tooltip` keeps its `text`, else its `term_id`), heading anchors `{#id}` are dropped, and code blocks and tables keep their content. The Kubernetes pages use shortcodes that need other files (code samples, includes, headings from translation strings), so the corpus is rendered to plain Markdown before ingestion (`ragqa.evaluation.corpus`, ML_DESIGN section 3).
-- **Chunker** is the swappable stage. The strategy belongs to the index, chosen at upload by selecting the target index (ADR-0013).
+- **Chunker** is the swappable stage. The strategy belongs to the index, chosen at upload by selecting the target index (ADR-0013). The worker builds the chunker for each job from a registry (`src/ragqa/ingestion/chunkers/`) using the index's `chunking_strategy` and `chunking_params`, and a `TokenCounter` for the index's embedder tokenizer. Both are supplied by `Backends`; a job fails permanently while no strategy or no counter is registered. The result is checked by `check_chunks`. Two strategies exist, both thin adapters over LangChain's text splitters (`langchain-text-splitters`) in `src/ragqa/ingestion/chunkers/langchain_chunkers.py`:
+  - `fixed-size` (the baseline of ADR-0019): windows of `chunk_chars` characters (default 1200) with `overlap_chars` overlap (default 150), cut at the nearest space, ignoring structure.
+  - `recursive`: splits on blank lines, then lines, then spaces until each piece fits `chunk_tokens` tokens (default 256) with `overlap_tokens` overlap (default 32), and packs neighbours up to that size.
+  Both reject unknown or inconsistent params. A splitter returns text only, so the adapter finds each piece's span in `ParsedDocument.text` by search: it starts after the previous piece started and ends after it ended, which skips a repeat of the same words inside the previous piece. LangChain's `add_start_index` is not used, because it assumes the length function counts characters. Token counts use the embedder's own tokenizer (`tokenizers`, loaded from the Hub at the pinned revision `embedder_revision` and cached in the `hf_cache` volume), without the special tokens the model adds.
 - **Embedder** is called over HTTP in batches (ADR-0012). TEI also batches dynamically on the server side across concurrent requests. Many models need different prefixes for queries and passages, so the `Embedder` interface has separate query and passage methods.
 - **Upsert** writes the dense vector from the embedder and the BM25 sparse vector for the same chunk text (ADR-0018). Qdrant computes the BM25 sparse vector itself from the chunk text (a `Document` with model `Qdrant/bm25`, available on self-hosted instances per the docs), so `EmbeddedChunk` stays dense only and TEI is not involved.
+- **The ingestion function** is `IngestionService.ingest` in `src/ragqa/ingestion/service.py`. It counts the attempt, reads the raw file, parses (in a thread), chunks (in a thread), embeds, upserts with `is_latest=false`, calls `complete_build`, and flips `is_latest` in Qdrant when `complete_build` says this version is the latest (ADR-0014). Document metadata is the parser's front matter overridden by what the uploader sent. After the upsert it checks again that the document was not deleted meanwhile, and removes its own points if it was. Rerunning a job changes nothing: point ids are deterministic, and `complete_build` also reports "latest" when the pointer is already on this version, so a flip missed by a crash is repaired by the retry.
+- **Wiring** is `src/ragqa/wiring.py` (`Backends`: engine, registry, file store, Qdrant client and chunk store, embedder, parser and chunker registries). The API and the worker both build it from `Settings`.
 - **Types** are in `src/ragqa/domain/documents.py` (ADR-0021). `ParsedDocument` holds one normalized text plus `sections` and `code_spans` as character spans into it. `Chunk` carries its own source span, `section_path`, `token_count` and `has_code`. `EmbeddedChunk` adds the dense vector. The format is an open string key resolved by a parser registry, so adding a format changes no type.
 
 Ingestion sequence (success path):
@@ -254,10 +259,10 @@ stateDiagram-v2
 
 **Retry and failure policy** (ADR-0011):
 - Up to 3 retries with exponential backoff for transient errors (embedder or Qdrant unavailable).
-- Permanent errors (unparseable or empty file) fail immediately, no retries.
-- After the retries the message goes to the dead-letter queue and the job status becomes `dead`, with the error recorded. There must be a way to requeue it.
-- The consumer acks only after the work finishes (prefetch 1) and checks job status on start, since delivery is at-least-once.
-- A republisher re-sends jobs stuck in `queued` past a timeout (the API commits to Postgres before publishing).
+- Permanent errors (unparseable or empty file, a missing raw file, a deleted document, an unknown chunking strategy, a chunker that breaks its contract, input the embedder rejects) fail immediately, no retries. The consumer records them through a `JobReporter` (job status `failed` with the error).
+- After the retries the message goes to the dead-letter queue and the job status becomes `dead`, with the error recorded (`RegistryJobReporter`). There must be a way to requeue it.
+- The consumer acks only after the work finishes (prefetch 1). Delivery is at-least-once, so the ingestion function is written to be repeatable instead of skipping jobs it has seen.
+- A maintenance loop in the worker (`src/ragqa/worker/maintenance.py`, every `maintenance_interval_s`) re-sends jobs stuck in `queued` for longer than `republish_after_s` (the API commits to Postgres before publishing, and a failed publish does not fail the upload), and finishes deletions that the API started and did not complete. A failed pass is logged and retried on the next one.
 
 ## 4. Query pipeline
 
@@ -354,7 +359,7 @@ FastAPI generates the OpenAPI schema from Pydantic models. The exported `openapi
 
 | Method | Path | Purpose | Request | Response |
 |--------|------|---------|---------|----------|
-| POST | `/documents` | Upload a new document | multipart: `file`, `metadata` (JSON), `index` (optional) | 202: `document_id`, `version`, `job_id` |
+| POST | `/documents` | Upload a new document | multipart: `file`, `title` (optional, default the file name), `metadata` (JSON, optional), `index` (optional) | 202: `document_id`, `version`, `version_id`, `job_id` |
 | POST | `/documents/{id}/versions` | Upload a new version | same as above | 202: as above, or 200 `no_changes` if the content hash is identical |
 | GET | `/documents` | List documents | query: filters, `include_deleted` | list of documents |
 | GET | `/documents/{id}` | Document details | | document with latest version and build statuses |
@@ -362,11 +367,17 @@ FastAPI generates the OpenAPI schema from Pydantic models. The exported `openapi
 | DELETE | `/documents/{id}` | Delete a document (tombstone stays) | | 202 |
 | GET | `/jobs/{id}` | Ingestion job status | | `status`, `attempts`, `error` |
 | GET | `/indexes` | List available indexes | | list of index configs |
-| POST | `/indexes` | Create an index (collection in Qdrant plus a registry row) | `name`, `dense_model`, `chunking_strategy`, `chunking_params` | 201: index config |
+| POST | `/indexes` | Create an index (collection in Qdrant plus a registry row) | `name`, `dense_model`, `dense_distance` (optional), `chunking_strategy`, `chunking_params` | 201: index config |
 | POST | `/query` | Ask a question | `question`, `index`, `filters`, `version`, `conversation_id` (optional) or inline `history` (optional, for stateless clients), pipeline config (stage toggles) | one of three responses below |
 | POST | `/query/stream` | Same as `/query`, streamed over SSE | same as `/query` | `text/event-stream`: token events, then a final event with the same union as `/query` |
 | GET | `/conversations/{id}/messages` | Read a conversation | | messages, oldest first, with citations and `trace_id` |
 | GET | `/health` | Liveness and dependency check | | status |
+
+**Uploads.** The extension must have a parser (415 otherwise, listing the supported ones), the file must be non-empty and at most `max_upload_bytes` (413), and `metadata` must be JSON with only the known fields (422 names the field). The target index is the named one; with no name, `default_index` from the settings, else the only index if there is exactly one, else 422 listing the names. The file is written to the shared volume first, then the registry rows are committed, then the job is published. A failed publish is logged and the job stays `queued` for the republisher. `DELETE` hides the document at once, then removes its vectors, files and versions in a background task (the maintenance loop finishes it if the API stops halfway).
+
+**Index creation.** `dense_model` must be the model this deployment embeds with (`embedder_model` in the settings), and `chunking_strategy` must be registered, otherwise 422. The vector size is not sent: the API measures it by embedding a probe text, and creates the Qdrant collection right after the registry row (ingestion creates it too if that step failed).
+
+**Errors** are JSON with `error.code`, `error.message` and the `request_id`: 404 `not_found`, 409 `index_exists`, 415 `unsupported_format`, 502 `embedder_error`, 503 `embedder_unavailable`.
 
 `POST /query` returns a discriminated union on `status`, because each case is a normal outcome and not an error:
 - `answer`: answer text, citations (document, version, section, quoted chunk), `trace_id`, `conversation_id`.
@@ -390,10 +401,11 @@ TODO(author): the SSE event names and payloads, and what happens to documents wh
 ```
 rag-qa-system/
   src/ragqa/
-    api/          FastAPI app, routers, request and response schemas
-    worker/       RabbitMQ consumer, republisher, job handling, entrypoint
+    api/          FastAPI app, routers (documents, indexes, jobs, conversations), schemas
+    worker/       RabbitMQ consumer, publisher, maintenance loop (republisher, deletions), entrypoint
+    wiring.py     `Backends`: the clients and registries that the API and the worker share
     domain/       pure types: ParsedDocument, Chunk, PipelineState, configs
-    ingestion/    parsers/ (md, docx), chunkers/, ingestion pipeline
+    ingestion/    parsers/ (md, docx), chunkers/ (contract and registry), service (the ingestion function), deletion
     query/        stages/ (rewrite, self_query, hyde, retrieve, rerank, context, generate), runner
     storage/      postgres/ (models, migrations, registry), qdrant/ (collections, upsert, is_latest flip), files/
     embeddings/   Embedder interface, in-process and remote implementations
