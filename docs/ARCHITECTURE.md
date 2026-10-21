@@ -75,11 +75,16 @@ Notes:
 | Table | Key columns |
 |-------|-------------|
 | `documents` | `id`, `title`, `latest_version_id`, `created_at`, `deleted_at` |
-| `versions` | `id`, `document_id`, `number`, `content_hash`, `raw_path`, `size_bytes`, `uploaded_at`, `metadata` (JSONB: `doc_type`, `tags`, `author`, `doc_date`, `language`) |
+| `versions` | `id`, `document_id`, `number`, `filename`, `source_format`, `content_hash`, `raw_path`, `size_bytes`, `uploaded_at`, `metadata` (JSONB: `doc_type`, `tags`, `author`, `doc_date`, `language`) |
 | `indexes` | `id` (bigint identity), `name` (unique), `collection` (unique, the Qdrant collection), `dense_model`, `dense_vector_size`, `dense_distance` (default `cosine`), `sparse_model` (`Qdrant/bm25`), `chunking_strategy`, `chunking_params` (JSONB) |
 | `version_index_builds` | `version_id`, `index_id`, `status`, `chunk_count`, `built_at` |
 | `jobs` | `id`, `version_id`, `index_id`, `status`, `attempts`, `error`, `created_at`, `updated_at` |
+| `conversations` | `id`, `created_at`, `updated_at` |
+| `messages` | `id`, `conversation_id`, `position` (unique per conversation), `role` (`system`, `user`, `assistant`, `tool`), `content`, `tool_calls` (JSONB), `tool_call_id`, `citations` (JSONB), `trace_id`, `created_at` |
 
+- **Schema in code:** models in `src/ragqa/storage/postgres/models/` (one module per area), migrations in `src/ragqa/storage/postgres/migrations/` (inside the package, so the image carries them). Compose runs a one-shot `migrate` service (`python -m ragqa.storage.postgres.migrate`) before the API and worker start. An integration test runs `alembic check`, so models and migrations cannot drift apart.
+- **Registry operations** are in `src/ragqa/storage/postgres/registry.py`, one transaction each: create a document or the next version with a queued job (identical content to the newest version returns nothing, story B1; the document row is locked so concurrent uploads number versions correctly), job attempts and status, `complete_build` (ADR-0014 step 2: an older version finishing late never takes the latest pointer back), stuck queued jobs for the republisher, tombstone and purge.
+- **Conversations** (story C4): the API appends the user message and the assistant message (with its citations and `trace_id`) after each answer, in one transaction (`append_messages`). The conversation row is locked while appending, so concurrent requests get distinct `position` values. Tool calls and tool results are stored as their own messages, so a turn that used a tool replays exactly. Citations are kept for the client and never sent back to the model. A pipeline stage never writes to the database.
 - **Job status** values: `queued`, `parsing`, `chunking`, `embedding`, `ready`, `failed`, `dead` (story A2, ADR-0011).
 - **Source of truth for "latest"** is `documents.latest_version_id` (ADR-0014).
 - **Indexes have a surrogate key.** Foreign keys point at `indexes.id`, so renaming an index or re-creating one with the same name never re-attaches old jobs and builds. The API accepts the index `name` and resolves it to the id. Logs and metric labels carry the name. Sparse vectors have no fixed size, so there is no sparse size column.
@@ -93,6 +98,7 @@ erDiagram
     versions ||--o{ version_index_builds : "built in"
     indexes ||--o{ version_index_builds : contains
     versions ||--o{ jobs : "processed by"
+    conversations ||--o{ messages : has
     indexes ||--o{ jobs : targets
 
     documents {
@@ -139,6 +145,23 @@ erDiagram
         text error
         ts created_at
         ts updated_at
+    }
+    conversations {
+        id id PK
+        ts created_at
+        ts updated_at
+    }
+    messages {
+        id id PK
+        id conversation_id FK
+        int position
+        text role
+        text content
+        json tool_calls
+        text tool_call_id
+        json citations
+        text trace_id
+        ts created_at
     }
 ```
 
@@ -242,10 +265,33 @@ A fixed sequence of stages, each switchable by config (ADR-0010). A stage is one
 
 Stages in order: query rewriting, Self-Query, HyDE, retrieve (`dense`, `sparse` or `hybrid`), rerank, context assembly, generate. Each can be turned on or off per request (stories D2 to D6).
 
-TODO(author):
-- Fields of the shared `PipelineState` and which stage writes each field.
-- Stage interface (input type, output type).
-- Expected shapes at boundaries: embedding vector size (taken from the index), number of chunks passed between stages, token budget for context.
+Types are in `src/ragqa/domain/pipeline.py` (state and config), `domain/retrieval.py` (retrieval query and chunks) and `domain/conversation.py` (messages). The `Stage` protocol is in `query/stages/base.py` and the runner is `query/runner.py`.
+
+**Stage interface.** A stage has a `name`, the state fields it `reads` and `writes`, `enabled(config)`, and `async run(state) -> state`. `PipelineState` is frozen, so a stage returns `state.model_copy(update=...)` with only its own fields changed. The runner skips disabled stages, runs each enabled one inside `traced_stage` (one span, one latency metric), and stops as soon as `state.outcome` is set, because a clarification or a deleted document ends the request early.
+
+**State fields and their writers:**
+
+| Field | Written by | Notes |
+|-------|------------|-------|
+| `question`, `index`, `user_filters`, `version`, `history`, `config`, `trace_id` | API | The request. Stages only read them. `history` holds the earlier messages of the conversation, oldest first, and not the current question |
+| `rewritten_query` | rewrite | Standalone form of the question, built from the question and the text turns of `history` |
+| `semantic_query`, `parsed_filters` | self_query | The question without its filter cues, and the filters as the LLM produced them |
+| `resolved_filters`, `clarification`, `deleted_document` | self_query | After checking values against the known ones (ADR-0008). `clarification` and `deleted_document` end the pipeline |
+| `hypothetical_document` | hyde | |
+| `candidates` | retrieve | At most `retrieve.top_k` chunks, best first |
+| `ranked` | rerank | The best `rerank.top_n` of `candidates`, reordered |
+| `context_chunks` | context | The chunks that fit `context.max_tokens` |
+| `answer`, `citations` | generate | |
+| `warnings` | any stage | Notes such as a filter value that was substituted |
+
+`outcome` is derived from the fields above (`document_deleted`, `needs_clarification` or `answer`), so no stage sets it.
+
+**History.** Messages are `ChatMessage` values with a role, content, optional `tool_calls` and, for tool results, a `tool_call_id`. The fixed pipeline makes no tool calls itself (ADR-0010), but history can contain them, for example from a `search_docs` lookup or a later agent experiment. Stages that only need what was said (rewrite) use `text_turns(history)`, which drops tool calls and tool results, so tool arguments and results never reach their prompts. Generate may include the newest `history.max_messages` messages. The API loads them from the conversation, or takes an inline `history` for stateless clients such as the eval runner.
+
+**Boundaries:**
+- The dense vector size comes from the index (`dense_vector_size`); the embedder client and the store both check it.
+- Chunk counts: `branch_limit` per prefetch branch in hybrid mode, `top_k` after fusion, `top_n` after reranking.
+- Token budget: the context stage keeps chunks while their `token_count` sum stays within `context.max_tokens`, counted with the embedder tokenizer, so the budget for the generator's own tokenizer needs a margin.
 
 **Hybrid retrieval** (ADR-0018): one Qdrant query with a `prefetch` branch per vector (`dense` and `bm25`, each with its own limit), merged by Reciprocal Rank Fusion. The text used differs per branch:
 - Dense branch: the HyDE document if present, else the Self-Query semantic query, else the rewritten query, else the question.
@@ -317,16 +363,19 @@ FastAPI generates the OpenAPI schema from Pydantic models. The exported `openapi
 | GET | `/jobs/{id}` | Ingestion job status | | `status`, `attempts`, `error` |
 | GET | `/indexes` | List available indexes | | list of index configs |
 | POST | `/indexes` | Create an index (collection in Qdrant plus a registry row) | `name`, `dense_model`, `chunking_strategy`, `chunking_params` | 201: index config |
-| POST | `/query` | Ask a question | `question`, `index`, `filters`, `version`, pipeline config (stage toggles) | one of three responses below |
+| POST | `/query` | Ask a question | `question`, `index`, `filters`, `version`, `conversation_id` (optional) or inline `history` (optional, for stateless clients), pipeline config (stage toggles) | one of three responses below |
 | POST | `/query/stream` | Same as `/query`, streamed over SSE | same as `/query` | `text/event-stream`: token events, then a final event with the same union as `/query` |
+| GET | `/conversations/{id}/messages` | Read a conversation | | messages, oldest first, with citations and `trace_id` |
 | GET | `/health` | Liveness and dependency check | | status |
 
 `POST /query` returns a discriminated union on `status`, because each case is a normal outcome and not an error:
-- `answer`: answer text, citations (document, version, section, quoted chunk), `trace_id`.
+- `answer`: answer text, citations (document, version, section, quoted chunk), `trace_id`, `conversation_id`.
 - `needs_clarification`: the filter field, the value that could not be resolved, a list of nearest candidates, `trace_id`. The client resends the request with the chosen value (ADR-0008).
 - `document_deleted`: document title, `deleted_at`, `trace_id` (story A6).
 
-TODO(author): the exact shape of the pipeline config object, SSE event names and payloads, and what happens to documents when an index is deleted (no delete endpoint yet).
+**Conversations:** without `conversation_id` the request starts a new conversation, and the response returns its id (a request with inline `history` is stateless and stores nothing). The API reads the history, runs the pipeline and then appends the user and assistant messages (ADR-0002). A request that ends in `needs_clarification` or `document_deleted` stores the user message and a short assistant message saying so, so the follow-up that resends the filter value has context. `GET /conversations/{id}/messages` returns the stored messages with their citations and `trace_id`.
+
+TODO(author): the SSE event names and payloads, and what happens to documents when an index is deleted (no delete endpoint yet).
 
 ## 6. Evaluation runner
 
@@ -346,7 +395,7 @@ rag-qa-system/
     domain/       pure types: ParsedDocument, Chunk, PipelineState, configs
     ingestion/    parsers/ (md, docx), chunkers/, ingestion pipeline
     query/        stages/ (rewrite, self_query, hyde, retrieve, rerank, context, generate), runner
-    storage/      postgres/ (models, repositories, unit of work), qdrant/ (index management, upsert, search), files/
+    storage/      postgres/ (models, migrations, registry), qdrant/ (collections, upsert, is_latest flip), files/
     embeddings/   Embedder interface, in-process and remote implementations
     llm/          LLM client interface, OpenAI-compatible client for the LiteLLM proxy
     evaluation/   golden-set tooling shared by tests and the eval runner (evidence quote validator)
@@ -356,7 +405,6 @@ rag-qa-system/
     configs/      pipeline configs (yaml)
     runner/       HTTP runner, metrics, MLflow logging
     reports/      generated
-  migrations/     Alembic
   tests/          unit/, integration/
   deploy/         docker-compose.yml, Dockerfiles
   docs/

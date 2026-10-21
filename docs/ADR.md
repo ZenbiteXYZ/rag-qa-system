@@ -73,7 +73,7 @@ Date of all records below: 2026-10-14.
 
 - **Status:** Accepted
 - **Context:** An agent that chooses its own tool calls is flexible, but a metric change could then come from a different tool path and not from the technique being tested.
-- **Decision:** The query pipeline is a fixed sequence of stages, and each technique is switched by config. Wrapping the pipeline as an agent tool is a later experiment.
+- **Decision:** The query pipeline is a fixed sequence of stages, and each technique is switched by config. Wrapping the pipeline as an agent tool is a later experiment. (Scheduled for protocol v2 in ADR-0022.)
 - **Consequences:** Effects of single techniques can be attributed, and runs are more repeatable. Less adaptive behavior on complex questions until multi-query or decomposition (story D6) is added as another stage.
 
 ## ADR-0011: Ingestion job transport: RabbitMQ
@@ -175,3 +175,14 @@ Date of all records below: 2026-10-14.
   - Code blocks are marked as `code_spans` by the parser (fences in markdown). Chunks carry `has_code`, and chunkers can use `overlaps_code` to avoid splitting a block.
   - The types are frozen Pydantic models with their invariants as validators. `src/ragqa/domain/documents.py`.
 - **Consequences:** Formats whose structure is not text (pages, slides, sheets) will need optional location fields on sections, which are backward-compatible additions. Other modalities are handled by parsers that convert to text (OCR or captions for images, transcription with timestamps for audio), so they reuse the pipeline and the evaluation unchanged. Native multimodal embeddings, and a separate code embedding model with its own vector, are not part of protocol v1: they would add vectors per index and need their own questions and a protocol change.
+
+## ADR-0022: Agent mode is planned for protocol v2
+
+- **Status:** Accepted (scheduling decision). The design below is a sketch, to be confirmed in a protocol v2 ADR.
+- **Context:** The author sees the service as a chat that can run tools and answer on its own, without a fixed workflow. ADR-0010 chose a fixed pipeline so that a metric change can only come from the technique under test, and listed wrapping the pipeline as an agent tool as a later experiment. Coverage@3 and the other v1 metrics assume one retrieval per question (ADR-0019).
+- **Decision:** Protocol v1 and its first experiments run on the fixed pipeline only. Agent mode is added under protocol v2, as a second mode next to the pipeline, which stays the baseline and the control. Sketch:
+  - Tools are thin wrappers over existing parts: `search_docs(query, filters)` over the `Retriever`, `list_filter_values(field, prefix)` in place of the fuzzy fallback of ADR-0008, and a document lookup that can report tombstones.
+  - A step cap bounds the tool calls per question. Clarification and deleted-document outcomes become normal assistant messages.
+  - The model is called through the LiteLLM proxy (ADR-0016), so no provider keys enter the app. LangGraph's ready-made agent is the first candidate. Its dependencies are added only when this ADR is confirmed.
+  - The v2 evaluation has to define which retrieved chunks count for coverage when an agent searches several times or not at all, and must report latency and tokens per question, since both rise with every extra call.
+- **Consequences:** The types are already prepared: `ChatMessage` carries tool calls and tool results, `LLMClient.complete` takes tool definitions, and history can hold tool turns. The `agent/` package is created then. `POST /query` will need a mode switch and a response shape for answers that are plain assistant messages. Results from the two modes are never mixed in one protocol version.
