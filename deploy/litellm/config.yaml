@@ -4,12 +4,17 @@
 # Secrets are read from the container environment, never written here.
 
 model_list:
-  - model_name: generator
+  - model_name: glm-5.3-flash
+    litellm_params:
+      model: openrouter/z-ai/glm-5.3-flash-20260826
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: haiku-5.5
     litellm_params:
       model: openrouter/anthropic/claude-haiku-5.5-20261007
       api_key: os.environ/OPENROUTER_API_KEY
 
-  - model_name: judge
+  - model_name: gpt-6-luna
     litellm_params:
       model: openrouter/openai/gpt-6-luna-20260922
       api_key: os.environ/OPENROUTER_API_KEY
