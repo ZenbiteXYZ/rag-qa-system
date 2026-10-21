@@ -19,7 +19,7 @@ ps:
 test:
 	uv run pytest
 
-test-integration:  ## Needs the broker up and RAGQA_TEST_RABBITMQ_URL set
+test-integration:  ## Needs RAGQA_TEST_RABBITMQ_URL, RAGQA_TEST_POSTGRES_DSN (a *test* database) and RAGQA_TEST_QDRANT_URL
 	uv run pytest -m integration
 
 lint:

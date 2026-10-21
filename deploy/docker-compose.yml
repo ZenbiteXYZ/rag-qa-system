@@ -48,6 +48,8 @@ x-app: &app
       condition: service_started
     mlflow:
       condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
 
 services:
   # --- Stateful services ---
@@ -134,6 +136,24 @@ services:
       retries: 10
 
   # --- Application ---
+
+  # Applies the registry migrations once, then exits. The API and worker wait for it.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ragqa-app:dev
+    command: ["python", "-m", "ragqa.storage.postgres.migrate"]
+    environment:
+      RAGQA_POSTGRES_DSN: postgresql+asyncpg://ragqa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/ragqa
+      RAGQA_ENV: ${RAGQA_ENV:-dev}
+    logging: *logging
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
     <<: *app

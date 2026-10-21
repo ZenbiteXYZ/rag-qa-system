@@ -72,8 +72,30 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      postgres:
+        image: postgres:17.11
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          # The registry tests reset the schema and refuse a database without "test" in its name.
+          POSTGRES_DB: ragqa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ragqa_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      qdrant:
+        # Same version as deploy/docker-compose.yml. The image has no curl, so no health check;
+        # the tests start after uv sync, which takes longer than Qdrant's startup.
+        image: qdrant/qdrant:v1.19.2
+        ports:
+          - 6333:6333
     env:
       RAGQA_TEST_RABBITMQ_URL: amqp://ci:ci@localhost:5672/
+      RAGQA_TEST_POSTGRES_DSN: postgresql+asyncpg://ci:ci@localhost:5432/ragqa_test
+      RAGQA_TEST_QDRANT_URL: http://localhost:6333
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.3.0
@@ -84,7 +106,7 @@ jobs:
       - name: Install
         run: uv sync --frozen --extra dev
       - name: Integration tests
-        # The tests skip when the broker URL is unset, and a skip exits 0. Fail on any skip.
+        # The tests skip when a service URL is unset, and a skip exits 0. Fail on any skip.
         shell: bash
         run: |
           uv run pytest -m integration -q -rs | tee pytest.log
