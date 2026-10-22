@@ -1,0 +1,10 @@
+# E6: Self-Query with the value checks of ADR-0008.
+name: e6_self_query
+description: "E6: Self-Query with the value checks of ADR-0008."
+index: base
+pipeline: {self_query: {enabled: true}}
+pins:
+  embedder: {model: Snowflake/snowflake-arctic-embed-m-v2.0, revision: 95c2741480856aa9666782eb4afe11959938017f}
+  generator: anthropic/claude-haiku-5.5-20261007
+  judge: openai/gpt-6-luna-20260922
+  images: {qdrant: "qdrant/qdrant:v1.19.2", tei: "text-embeddings-inference:cpu-1.9.4", litellm: "ghcr.io/berriai/litellm:v1.106.0"}

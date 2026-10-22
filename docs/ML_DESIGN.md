@@ -161,6 +161,21 @@ Before the first judged result is used:
 3. The gate, fixed before looking at the result: exact agreement with your labels of at least 80%, and at most 10% of the answers you labeled wrong judged correct. With 30 labels this is a coarse check. If it fails, fix the rubric first. A new judge or a new rubric then counts as a protocol change.
 4. Repeat the check whenever the judge, the rubric or the generator changes.
 
+### 4a. Definitions fixed by the implementation (metric code version 1)
+
+ML_DESIGN above leaves some definitions open. The code (`ragqa.evaluation.metrics`) fixes them as follows. They clarify protocol v1 and do not change it; a change to any of them bumps `METRIC_CODE_VERSION`, and one that changes what a metric means is a protocol change.
+
+- **Which chunks:** retrieval metrics read the ranked list (after reranking when it ran, else the retrieved candidates), in rank order. `context_coverage` reads the whole final context, neighbors included.
+- **Matching:** a chunk matches evidence when it is of the same document and release and the character ranges overlap. A retrieved chunk of a version that is not in the ingest manifest matches no evidence but its characters count in Precision@k.
+- **Containment** is 1 when one chunk contains every required evidence item, **overlap** is 1 when any chunk overlaps any required item.
+- **Filter metrics** compare normalized (field, value) pairs (case and punctuation ignored, one pair per tag, dates as ISO). A filter applied by Self-Query is one that survived the checks of ADR-0008. When Self-Query is off, filter metrics are not computed. Precision with nothing applied is 1 (nothing was applied wrongly), and recall with nothing expected is 1.
+- **Citations:** the generator cites with `[n]`, the number of an excerpt. Citation validity is the share of cited numbers that point at an existing excerpt (undefined without citations). Citation support is the coverage of the required evidence by the cited chunks, 0 for a refusal. Version accuracy is 1 when the answer cites chunks of the evidence documents and all of them are of the expected release.
+- **Abstention** is detected by the fixed refusal sentence that the generator prompt asks for when the excerpts do not contain the answer (`ragqa.query.prompts.REFUSAL`). With no retrieved context the pipeline answers with it without an LLM call.
+- **Judged metrics:** answer correctness is the mean of 1, 0.5 and 0 for correct, partly correct and wrong. Faithfulness is the share of supported claims and is only judged for answers written from excerpts. Relevancy is judged for answers that are not refusals.
+- **Failed requests** have no metrics. Aggregates report `n`, the number of questions the metric is defined for, and the failures are listed in the report. Comparisons only use questions that have a value in both runs. Degraded stages (an optional stage that failed and was skipped) are counted in every run.
+- **Per question and repetition:** metrics are computed per repetition, averaged over a question's repetitions, then averaged over questions. Latency percentiles are taken over all requests. Run-to-run noise is the mean absolute difference between a question's first two repetitions.
+- **Tokens and cost:** tokens are summed over the LLM calls of a request. Cost is not computed, since the proxy's price header is not read yet.
+
 ### Repetition and uncertainty
 - LLM calls are not deterministic (the chosen models do not accept sampling settings, see section 6), so end-to-end runs are repeated. Each configuration is run twice. Run-to-run noise is estimated from the difference between the two runs of each question.
 - Compare configs per question (the same questions in both), and report the number of questions that got better, worse and unchanged next to the averages.

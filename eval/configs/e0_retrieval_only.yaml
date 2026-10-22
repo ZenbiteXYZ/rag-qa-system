@@ -1,0 +1,10 @@
+# E0 at level 1: retrieval only, no generation (no LLM call, no judge).
+name: e0_retrieval_only
+description: "E0 at level 1: retrieval only, no generation (no LLM call, no judge)."
+index: base
+pipeline: {generate: {enabled: false}}
+pins:
+  embedder: {model: Snowflake/snowflake-arctic-embed-m-v2.0, revision: 95c2741480856aa9666782eb4afe11959938017f}
+  generator: anthropic/claude-haiku-5.5-20261007
+  judge: openai/gpt-6-luna-20260922
+  images: {qdrant: "qdrant/qdrant:v1.19.2", tei: "text-embeddings-inference:cpu-1.9.4", litellm: "ghcr.io/berriai/litellm:v1.106.0"}

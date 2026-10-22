@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-ragqa is a RAG question-answering service over versioned `.md` and `.docx` documents, and a lab for comparing chunking strategies and query-side techniques (rewriting, HyDE, Self-Query, hybrid search, reranking) on a hand-written golden set. The design lives in `docs/` (ADR.md, ARCHITECTURE.md, ML_DESIGN.md); read the relevant ADR before changing a decision. The README status section is out of date: ingestion and the document API are implemented, question answering is not.
+ragqa is a RAG question-answering service over versioned `.md` and `.docx` documents, and a lab for comparing chunking strategies and query-side techniques (rewriting, HyDE, Self-Query, hybrid search, reranking) on a hand-written golden set. The design lives in `docs/` (ADR.md, ARCHITECTURE.md, ML_DESIGN.md); read the relevant ADR before changing a decision.
 
 ## Commands
 
@@ -37,6 +37,8 @@ Two processes share one image and one composition root: the API (`ragqa.api`) an
 **LLM access** goes through the LiteLLM proxy over the OpenAI-compatible API (`llm/client.py`, ADR-0016). The app holds no provider keys. `model` is a proxy alias from `deploy/litellm/config.yaml`.
 
 **Schema** is in code: models in `storage/postgres/models/`, migrations inside the package (`storage/postgres/migrations/`, so the image carries them). Compose runs a `migrate` service before the API and worker. An integration test runs `alembic check`, so a model change without a migration fails.
+
+**Evaluation** (`evaluation/`, `eval/`): `python -m ragqa.evaluation` runs the protocol of ADR-0019 against the real API (stateless requests with `debug: true`, which needs `RAGQA_ALLOW_QUERY_DEBUG`), stores every run as an immutable directory, and computes metrics, the judge scores and paired comparisons from those files only. Definitions the protocol leaves open are in ML_DESIGN section 4a. `ingest manifest` files map corpus (document, release) to registry ids.
 
 **Observability**: structlog JSON logs (`get_logger`), context bound per request and job, `traced_stage` and `llm_call` in `observability/tracing.py` for MLflow spans and Prometheus metrics, readiness checks in `api/readiness.py`. Use them instead of ad hoc logging or timing.
 

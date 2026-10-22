@@ -406,9 +406,17 @@ TODO(author): what happens to documents when an index is deleted (no delete endp
 
 ## 6. Evaluation runner
 
-- Calls the API over HTTP, so it exercises the real environment. This needs `POST /query` to accept a per-request pipeline config, and uses the `trace_id` to read retrieved chunks from MLflow.
-- Configs and seeds live in YAML under `eval/configs/`. The golden set lives under `eval/golden/` and is versioned in git (ADR-0005).
-- Each run is an MLflow run: pipeline config as params, metrics, and the report and golden set version as artifacts, together with the raw per-question outputs that metrics are computed from (ML_DESIGN section 6, run records). Reports are generated artifacts, named with config hash and git sha.
+Implements evaluation protocol v1 (ADR-0019, ML_DESIGN). Code is in `src/ragqa/evaluation/` (importable, so it is tested with the rest); data is in `eval/` (`golden/`, `configs/`, `corpus/`, `reports/`). Command: `python -m ragqa.evaluation <command>`.
+
+- **Golden set** (`golden.py`): YAML questions with evidence quotes. `validate-golden` checks the shape (6 per category, 3 dev and 3 test), and resolves every quote against the parser output of the corpus (`evidence.py`). The resolved character spans are stored in every run, so metrics never need the corpus again.
+- **Ingest manifest** (`manifest.py`, `load_corpus.py`): retrieved chunks carry registry ids and evidence is tagged with corpus paths and releases. `load_corpus` uploads the releases in order through the API, waits for the jobs, and writes the manifest that maps (document, release) to registry ids and version numbers. A page that did not change between releases is not a new version, so the manifest points both releases at the same version. The synthetic authors come from `eval/corpus/authors.json` (`authors.py`, fixed seed).
+- **Run** (`runner.py`): calls the real API over HTTP, one stateless request per question and repetition (inline history), with the pipeline config of `eval/configs/<name>.yaml` as overrides and `debug: true`. The API must run with `RAGQA_ALLOW_QUERY_DEBUG=true`: the stage outputs, retrieved chunks with spans, prompts, timings and tokens that the metrics need come from that field, so the run does not depend on searching MLflow traces. A version-sensitive question that names a release is sent with the `version` number the manifest gives for its evidence documents. Failed requests are stored with their error and never retried or dropped.
+- **Run records** (`records.py`): a run is a directory written once: `meta.json` (protocol and metric-code versions, the config and its hash, git sha and dirty flag, `uv.lock` hash, prompt version, pins from the config, index, golden hash), `golden.json`, `manifest.json`, `config.yaml`, `records.jsonl` (one record per question and repetition), `finished.json` (end time, the effective pipeline config the API reported, the provider models that answered), `judge.jsonl`, and the computed `metrics.p<protocol>.m<code>.json` and report. Nothing is overwritten.
+- **Judge** (`judge.py`, `calibrate.py`): `gpt-6-luna` through the proxy, structured output, reasoning effort `low`, a seed, versioned rubrics (`RUBRIC_VERSION`) for answer correctness (correct 1, partly correct 0.5, wrong 0), faithfulness (share of supported claims) and answer relevancy (1 to 5, rescaled). `judge` refuses to run unless `calibrate` has passed the gate for this judge and rubric (80% agreement with 30 hand labels in each of two passes, and at most 10% of the answers labeled wrong judged correct), or `--uncalibrated` is given, in which case the report says so.
+- **Metrics** (`metrics.py`): every metric of ML_DESIGN section 4 as a function of the run files only. Definitions that ML_DESIGN leaves open are fixed in the code and listed in ML_DESIGN section 4a.
+- **Comparison** (`compare.py`, `report.py`): paired by question, better/worse/same counts, a bootstrap interval over questions, and the run-to-run noise from the repetitions; a difference is "distinguishable" only if the interval excludes 0 and it exceeds the noise. Runs with a different protocol version or golden set are not compared.
+- **MLflow** (`mlflow_log.py`): `mlflow` stores the parameters, the aggregated metrics and every file of the run directory as artifacts (ADR-0015). It uses MLflow's REST API with `httpx`, because the app depends on `mlflow-tracing` only, which has no run logging.
+- Order of work: `validate-golden`, `calibrate` (per judge and rubric), then per configuration `run`, `judge`, `metrics`, `compare` against the baseline, `mlflow`.
 - Repeat runs and report variance. API LLMs are not deterministic, and the chosen models do not accept sampling settings.
 - The pipeline stays importable as a package, so stages can be unit tested without HTTP.
 
@@ -426,13 +434,13 @@ rag-qa-system/
     storage/      postgres/ (models, migrations, registry), qdrant/ (collections, upsert, is_latest flip), files/
     embeddings/   Embedder interface, in-process and remote implementations
     llm/          LLM client interface, OpenAI-compatible client for the LiteLLM proxy
-    evaluation/   golden-set tooling shared by tests and the eval runner (evidence quote validator)
+    evaluation/   golden set, metrics, judge, runner, comparison, MLflow logging, corpus loader (`python -m ragqa.evaluation`)
     settings.py   config loading
   eval/
-    golden/       questions (versioned)
-    configs/      pipeline configs (yaml)
-    runner/       HTTP runner, metrics, MLflow logging
-    reports/      generated
+    golden/       questions and judge calibration items (versioned)
+    configs/      evaluation configs, one per experiment (yaml)
+    corpus/       corpus manifests, author mapping, ingest manifests
+    reports/      run directories (generated)
   tests/          unit/, integration/
   deploy/         docker-compose.yml, Dockerfiles
   docs/

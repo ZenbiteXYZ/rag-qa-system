@@ -1,0 +1,10 @@
+# E3: hybrid retrieval (dense + BM25, RRF).
+name: e3_hybrid
+description: "E3: hybrid retrieval (dense + BM25, RRF)."
+index: base
+pipeline: {retrieve: {mode: hybrid}}
+pins:
+  embedder: {model: Snowflake/snowflake-arctic-embed-m-v2.0, revision: 95c2741480856aa9666782eb4afe11959938017f}
+  generator: anthropic/claude-haiku-5.5-20261007
+  judge: openai/gpt-6-luna-20260922
+  images: {qdrant: "qdrant/qdrant:v1.19.2", tei: "text-embeddings-inference:cpu-1.9.4", litellm: "ghcr.io/berriai/litellm:v1.106.0"}

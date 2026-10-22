@@ -8,7 +8,7 @@ Users upload documents (`.md`, `.docx`), the service keeps every version of each
 
 Implemented: document upload and versioning, index creation, and ingestion (parse, chunk, embed, store) through a RabbitMQ worker with retries and a dead-letter queue, plus structured logs, tracing and metrics. Two chunking strategies exist (`fixed-size`, `recursive`). Question answering works: `POST /query` runs a switchable pipeline (query rewriting, Self-Query, HyDE, dense, sparse or hybrid retrieval, reranking, context assembly, cited generation) and keeps conversations; `POST /query/stream` streams the answer.
 
-Not implemented yet: the evaluation runner and the golden question set. Nothing has been evaluated. Agent mode is planned for evaluation protocol v2 (ADR-0022).
+The evaluation runner is implemented (`python -m ragqa.evaluation`: golden-set checks, HTTP runs, an LLM judge with a calibration gate, all metrics of the protocol, paired comparison, MLflow logging). The golden questions are not written yet and nothing has been evaluated. Agent mode is planned for evaluation protocol v2 (ADR-0022).
 
 ## Planned stack
 
