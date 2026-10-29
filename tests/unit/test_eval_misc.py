@@ -289,3 +289,15 @@ def test_every_committed_eval_config_is_valid() -> None:
         assert config.name == file.stem
         merged = deep_merge(PipelineConfig(default_model="m").model_dump(), config.pipeline)
         PipelineConfig.model_validate(merged)  # no unknown or invalid fields
+
+
+def test_the_committed_golden_set_has_the_protocol_shape() -> None:
+    """Offline part of `validate-golden`: the shape of ADR-0019. Quote resolution needs the
+    corpus, so it is checked by `python -m ragqa.evaluation validate-golden --corpus ...`."""
+    from ragqa.evaluation.golden import load_golden
+
+    golden = load_golden(Path("eval/golden"))
+
+    assert len(golden.questions) == 42
+    assert golden.check_composition() == []
+    assert len(golden.select("dev")) == len(golden.select("test")) == 21

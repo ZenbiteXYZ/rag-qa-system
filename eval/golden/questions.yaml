@@ -1,0 +1,540 @@
+# DRAFT for the author to review (ADR-0005). 42 questions, 6 per category, 3 dev and 3 test per category.
+# Quotes were cut from the parser output of the corpus, split drawn with seed 20261014.
+# Authors in expected_filters are the synthetic ones of eval/corpus/authors.json (ADR-0007).
+- id: sec-01
+  category: single_section
+  split: test
+  question: How many old ReplicaSets does a Deployment keep by default?
+  evidence:
+  - document: concepts/workloads/controllers/deployment.md
+    version: release-1.36
+    quote: You can set .spec.revisionHistoryLimit field in a Deployment to specify how many old ReplicaSets
+      for this Deployment you want to retain. The rest will be garbage-collected in the background. By
+      default, it is 10.
+  reference_answer: 10. The default of .spec.revisionHistoryLimit is 10, and the rest are garbage-collected
+    in the background.
+- id: sec-02
+  category: single_section
+  split: dev
+  question: What is the maximum amount of data that a ConfigMap can hold?
+  evidence:
+  - document: concepts/configuration/configmap.md
+    version: release-1.36
+    quote: The data stored in a ConfigMap cannot exceed 1 MiB.
+  reference_answer: 1 MiB.
+- id: sec-03
+  category: single_section
+  split: test
+  question: Why can the name of a CronJob not be longer than 52 characters?
+  evidence:
+  - document: concepts/workloads/controllers/cron-jobs.md
+    version: release-1.36
+    quote: Even when the name is a DNS subdomain, the name must be no longer than 52 characters. This
+      is because the CronJob controller will automatically append 11 characters to the name you provide
+      and there is a constraint that the length of a Job name is no more than 63 characters.
+  reference_answer: The CronJob controller appends 11 characters to the name, and the name of a Job can
+    be at most 63 characters long.
+- id: sec-04
+  category: single_section
+  split: test
+  question: Which PersistentVolume reclaim policy is deprecated, and what is recommended instead?
+  evidence:
+  - document: concepts/storage/persistent-volumes.md
+    version: release-1.36
+    quote: 'Warning: The Recycle reclaim policy is deprecated. Instead, the recommended approach is to
+      use dynamic provisioning.'
+  reference_answer: The Recycle reclaim policy is deprecated. The recommended approach is dynamic provisioning.
+- id: sec-05
+  category: single_section
+  split: dev
+  question: What does the PreferNoSchedule taint effect do?
+  evidence:
+  - document: concepts/scheduling-eviction/taint-and-toleration.md
+    version: release-1.36
+    quote: 'PreferNoSchedule : PreferNoSchedule is a "preference" or "soft" version of NoSchedule. The
+      control plane will try to avoid placing a Pod that does not tolerate the taint on the node, but
+      it is not guaranteed.'
+  reference_answer: 'It is a soft version of NoSchedule: the control plane tries to avoid placing a Pod
+    that does not tolerate the taint on the node, but this is not guaranteed.'
+- id: sec-06
+  category: single_section
+  split: dev
+  question: By default, how many retries does a Job allow before it is considered failed, and how does
+    the delay between retries grow?
+  evidence:
+  - document: concepts/workloads/controllers/job.md
+    version: release-1.36
+    quote: The .spec.backoffLimit is set by default to 6, unless the backoff limit per index (only Indexed
+      Job) is specified. When .spec.backoffLimitPerIndex is specified, then .spec.backoffLimit defaults
+      to 2147483647 (MaxInt32). Failed Pods associated with the Job are recreated by the Job controller
+      with an exponential back-off delay (10s, 20s, 40s ...) capped at six minutes.
+  reference_answer: Six retries (.spec.backoffLimit defaults to 6). Failed Pods are recreated with an
+    exponential back-off delay of 10s, 20s, 40s and so on, capped at six minutes.
+- id: mul-01
+  category: multi_section
+  split: test
+  question: How do the NodePort and LoadBalancer Service types expose a Service outside the cluster?
+  evidence:
+  - document: concepts/services-networking/service.md
+    version: release-1.36
+    quote: 'NodePort : Exposes the Service on each Node''s IP at a static port (the NodePort). To make
+      the node port available, Kubernetes sets up a cluster IP address, the same as if you had requested
+      a Service of type: ClusterIP.'
+  - document: concepts/services-networking/service.md
+    version: release-1.36
+    quote: 'LoadBalancer : Exposes the Service externally using an external load balancer. Kubernetes
+      does not directly offer a load balancing component; you must provide one, or you can integrate your
+      Kubernetes cluster with a cloud provider.'
+  reference_answer: NodePort exposes the Service on each Node's IP at a static port (and also sets up
+    a cluster IP). LoadBalancer exposes it through an external load balancer, which you must provide yourself
+    or get by integrating with a cloud provider.
+- id: mul-02
+  category: multi_section
+  split: test
+  question: What is the difference between the Retain and Delete reclaim policies of a PersistentVolume?
+  evidence:
+  - document: concepts/storage/persistent-volumes.md
+    version: release-1.36
+    quote: The Retain reclaim policy allows for manual reclamation of the resource. When the PersistentVolumeClaim
+      is deleted, the PersistentVolume still exists and the volume is considered "released". But it is
+      not yet available for another claim
+  - document: concepts/storage/persistent-volumes.md
+    version: release-1.36
+    quote: For volume plugins that support the Delete reclaim policy, deletion removes both the PersistentVolume
+      object from Kubernetes, as well as the associated storage asset in the external infrastructure.
+  reference_answer: With Retain, the PersistentVolume still exists after its claim is deleted and is considered
+    released, for manual reclamation. With Delete, the PersistentVolume object and the associated storage
+    asset in the external infrastructure are removed.
+- id: mul-03
+  category: multi_section
+  split: dev
+  question: What is the difference between a ResourceQuota and a LimitRange?
+  evidence:
+  - document: concepts/policy/resource-quotas.md
+    version: release-1.36
+    quote: A resource quota, defined by a ResourceQuota object, provides constraints that limit aggregate
+      resource consumption per namespace.
+  - document: concepts/policy/limit-range.md
+    version: release-1.36
+    quote: A LimitRange is a policy to constrain the resource allocations (limits and requests) that you
+      can specify for each applicable object kind (such as Pod or PersistentVolumeClaim) in a namespace.
+  reference_answer: A ResourceQuota limits the aggregate resource consumption per namespace (and can limit
+    the number of objects by kind). A LimitRange constrains the resource allocations (limits and requests)
+    of each individual object of an applicable kind in a namespace.
+- id: mul-04
+  category: multi_section
+  split: test
+  question: How are CPU limits and memory limits enforced differently for a container?
+  evidence:
+  - document: concepts/configuration/manage-resources-containers.md
+    version: release-1.36
+    quote: cpu limits are enforced by CPU throttling. When a container approaches its cpu limit, the kernel
+      will restrict access to the CPU corresponding to the container's limit. Thus, a cpu limit is a hard
+      limit the kernel enforces. Containers may not use more CPU than is specified in their cpu limit.
+  - document: concepts/configuration/manage-resources-containers.md
+    version: release-1.36
+    quote: memory limits are enforced by the kernel with out of memory (OOM) kills. When a container uses
+      more than its memory limit, the kernel may terminate it.
+  reference_answer: 'CPU limits are enforced by CPU throttling: the container cannot use more CPU than
+    its limit. Memory limits are enforced by the kernel with out of memory (OOM) kills: a container that
+    uses more than its memory limit may be terminated, but only once the kernel detects memory pressure.'
+- id: mul-05
+  category: multi_section
+  split: dev
+  question: When I drain a node, how do PodDisruptionBudgets affect the eviction of Pods?
+  evidence:
+  - document: tasks/administer-cluster/safely-drain-node.md
+    version: release-1.36
+    quote: You can use kubectl drain to safely evict all of your pods from a node before you perform maintenance
+      on the node (e.g. kernel upgrade, hardware maintenance, etc.). Safe evictions allow the pod's containers
+      to gracefully terminate and will respect the PodDisruptionBudgets
+  - document: concepts/workloads/pods/disruptions.md
+    version: release-1.36
+    quote: A PDB limits the number of Pods of a replicated application that are down simultaneously from
+      voluntary disruptions.
+  reference_answer: kubectl drain evicts Pods safely and respects the PodDisruptionBudgets you have defined.
+    A PodDisruptionBudget limits the number of Pods of a replicated application that are down at the same
+    time from voluntary disruptions, so a drain only evicts as many Pods as the budget allows.
+- id: mul-06
+  category: multi_section
+  split: dev
+  question: What is the difference between voluntary and involuntary disruptions of Pods?
+  evidence:
+  - document: concepts/workloads/pods/disruptions.md
+    version: release-1.36
+    quote: 'We call these unavoidable cases involuntary disruptions to an application. Examples are: -
+      a hardware failure of the physical machine backing the node'
+  - document: concepts/workloads/pods/disruptions.md
+    version: release-1.36
+    quote: We call other cases voluntary disruptions. These include both actions initiated by the application
+      owner and those initiated by a Cluster Administrator.
+  reference_answer: Involuntary disruptions are unavoidable cases, for example a hardware failure of the
+    physical machine backing the node. Voluntary disruptions are the other cases, and include both actions
+    initiated by the application owner and those initiated by a cluster administrator.
+- id: tok-01
+  category: exact_token
+  split: test
+  question: What is the default of the --service-node-port-range flag?
+  evidence:
+  - document: concepts/services-networking/service.md
+    version: release-1.36
+    quote: 'allocates a port from a range specified by --service-node-port-range flag (default: 30000-32767).'
+  reference_answer: 30000-32767. The control plane allocates NodePort ports from this range.
+- id: tok-02
+  category: exact_token
+  split: dev
+  question: What is the default value of --horizontal-pod-autoscaler-sync-period?
+  evidence:
+  - document: concepts/workloads/autoscaling/horizontal-pod-autoscale.md
+    version: release-1.36
+    quote: The interval is set by the --horizontal-pod-autoscaler-sync-period parameter to the kube-controller-manager
+      (and the default interval is 15 seconds).
+  reference_answer: The default interval is 15 seconds. The flag is a parameter of the kube-controller-manager.
+- id: tok-03
+  category: exact_token
+  split: test
+  question: What is the default value of .spec.strategy.rollingUpdate.maxUnavailable in a Deployment?
+  evidence:
+  - document: concepts/workloads/controllers/deployment.md
+    version: release-1.36
+    quote: .spec.strategy.rollingUpdate.maxUnavailable is an optional field that specifies the maximum
+      number of Pods that can be unavailable during the update process. The value can be an absolute number
+      (for example, 5) or a percentage of desired Pods (for example, 10%). The absolute number is calculated
+      from percentage by rounding down. The value cannot be 0 if .spec.strategy.rollingUpdate.maxSurge
+      is 0. The default value is 25%.
+  reference_answer: 25%.
+- id: tok-04
+  category: exact_token
+  split: dev
+  question: What is the default terminationGracePeriodSeconds setting?
+  evidence:
+  - document: concepts/workloads/pods/pod-lifecycle.md
+    version: release-1.36
+    quote: The default terminationGracePeriodSeconds setting is 30 seconds.
+  reference_answer: 30 seconds.
+- id: tok-05
+  category: exact_token
+  split: test
+  question: Which Job field makes finished Jobs clean themselves up automatically?
+  evidence:
+  - document: concepts/workloads/controllers/ttlafterfinished.md
+    version: release-1.36
+    quote: You can use this mechanism to clean up finished Jobs (either Complete or Failed) automatically
+      by specifying the .spec.ttlSecondsAfterFinished field of a Job, as in this example.
+  reference_answer: .spec.ttlSecondsAfterFinished, which cleans up finished Jobs (either Complete or Failed)
+    automatically.
+- id: tok-06
+  category: exact_token
+  split: dev
+  question: Which kubeadm command prints a join command and also generates a new token?
+  evidence:
+  - document: tasks/administer-cluster/kubeadm/adding-linux-nodes.md
+    version: release-1.36
+    quote: 'To print a kubeadm join command while also generating a new token you can use: sudo kubeadm
+      token create --print-join-command'
+  reference_answer: sudo kubeadm token create --print-join-command
+- id: met-01
+  category: metadata_cue
+  split: test
+  question: In the documents by I. Petrov, which Secret type stores the contents of a ~/.docker/config.json
+    file?
+  expected_filters:
+    author: I. Petrov
+  evidence:
+  - document: concepts/configuration/secret.md
+    version: release-1.36
+    quote: 'kubernetes.io/dockerconfigjson: store a serialized JSON that follows the same format rules
+      as the ~/.docker/config.json file, which is a new format for ~/.dockercfg. The Secret data field
+      must contain a .dockerconfigjson key for which the value is the content of a base64 encoded ~/.docker/config.json
+      file.'
+  reference_answer: kubernetes.io/dockerconfigjson. The Secret data field must contain a .dockerconfigjson
+    key whose value is the base64 encoded content of the ~/.docker/config.json file.
+- id: met-02
+  category: metadata_cue
+  split: test
+  question: According to the documentation written by S. Lebedev, which path types does an Ingress support,
+    and what does each match?
+  expected_filters:
+    author: S. Lebedev
+  evidence:
+  - document: concepts/services-networking/ingress.md
+    version: release-1.36
+    quote: 'There are three supported path types: - ImplementationSpecific: With this path type, matching
+      is up to the IngressClass. Implementations can treat this as a separate pathType or treat it identically
+      to Prefix or Exact path types. - Exact: Matches the URL path exactly and with case sensitivity.
+      - Prefix: Matches based on a URL path prefix split by /. Matching is case sensitive and done on
+      a path element by element basis. A path element refers to the list of labels in the path split by
+      the / separator. A request is a match for path p if every p is an element-wise prefix of p of the
+      request path.'
+  reference_answer: 'Three: ImplementationSpecific (matching is up to the IngressClass), Exact (matches
+    the URL path exactly and with case sensitivity) and Prefix (matches based on a URL path prefix split
+    by /, case sensitive and element by element).'
+- id: met-03
+  category: metadata_cue
+  split: dev
+  question: In the task guides by D. Kuznetsov, which command changes the reclaim policy of a PersistentVolume
+    to Retain?
+  expected_filters:
+    author: D. Kuznetsov
+    doc_type: task
+  evidence:
+  - document: tasks/administer-cluster/change-pv-reclaim-policy.md
+    version: release-1.36
+    quote: kubectl patch pv <your-pv-name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}' where
+      <your-pv-name> is the name of your chosen PersistentVolume.
+  reference_answer: kubectl patch pv <your-pv-name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}',
+    where <your-pv-name> is the name of the chosen PersistentVolume.
+- id: met-04
+  category: metadata_cue
+  split: test
+  question: In the concept documentation, what is the kube-node-lease namespace for?
+  expected_filters:
+    doc_type: concept
+  evidence:
+  - document: concepts/overview/working-with-objects/namespaces.md
+    version: release-1.36
+    quote: 'kube-node-lease : This namespace holds Lease objects associated with each node. Node leases
+      allow the kubelet to send heartbeats so that the control plane can detect node failure.'
+  reference_answer: It holds the Lease objects associated with each node. Node leases let the kubelet
+    send heartbeats so that the control plane can detect node failure.
+- id: met-05
+  category: metadata_cue
+  split: dev
+  question: In the tutorials, how do I increase the number of Pods of a Deployment by applying a new YAML
+    file?
+  expected_filters:
+    doc_type: tutorial
+  evidence:
+  - document: tasks/run-application/run-stateless-application-deployment.md
+    version: release-1.36
+    quote: 'You can increase the number of Pods in your Deployment by applying a new YAML file. This YAML
+      file sets replicas to 4, which specifies that the Deployment should have four Pods:'
+  reference_answer: Apply a new YAML file that sets replicas to 4, which specifies that the Deployment
+    should have four Pods.
+- id: met-06
+  category: metadata_cue
+  split: dev
+  question: In the "Pod Priority and Preemption" document, which two PriorityClasses does Kubernetes already
+    ship with?
+  expected_filters:
+    document: Pod Priority and Preemption
+  evidence:
+  - document: concepts/scheduling-eviction/pod-priority-preemption.md
+    version: release-1.36
+    quote: 'Note: Kubernetes already ships with two PriorityClasses: system-cluster-critical and system-node-critical.
+      These are common classes and are used to ensure that critical components are always scheduled first.'
+  reference_answer: system-cluster-critical and system-node-critical. They are used to ensure that critical
+    components are always scheduled first.
+- id: ver-01
+  category: version_sensitive
+  split: test
+  question: In Kubernetes 1.32, is the mixed version proxy feature enabled by default?
+  release: release-1.32
+  evidence:
+  - document: concepts/architecture/mixed-version-proxy.md
+    version: release-1.32
+    quote: 'FEATURE STATE: Kubernetes v1.28 [alpha] (enabled by default: false) Kubernetes 1.32 includes
+      an alpha feature that lets an API Server proxy a resource requests to other peer API servers.'
+  reference_answer: 'No. In 1.32 it is an alpha feature (enabled by default: false) that lets an API server
+    proxy resource requests to other peer API servers.'
+- id: ver-02
+  category: version_sensitive
+  split: dev
+  question: In Kubernetes 1.32, which components must be started with --cloud-provider=external when you
+    use an external cloud controller manager?
+  release: release-1.32
+  evidence:
+  - document: tasks/administer-cluster/running-cloud-controller.md
+    version: release-1.32
+    quote: kubelet, kube-apiserver, and kube-controller-manager must be set according to the user's usage
+      of external CCM. If the user has an external CCM (not the internal cloud controller loops in the
+      Kubernetes Controller Manager), then --cloud-provider=external must be specified.
+  reference_answer: The kubelet, the kube-apiserver and the kube-controller-manager.
+- id: ver-03
+  category: version_sensitive
+  split: dev
+  question: In Kubernetes 1.34, is the Mutable CSI Node Allocatable Count feature enabled by default?
+  release: release-1.34
+  evidence:
+  - document: concepts/storage/storage-limits.md
+    version: release-1.34
+    quote: 'FEATURE STATE: Kubernetes v1.34 [beta] (disabled by default) CSI drivers can dynamically adjust
+      the maximum number of volumes that can be attached to a Node at runtime. This enhances scheduling
+      accuracy and reduces pod scheduling failures due to changes in resource availability.'
+  reference_answer: No. In 1.34 it is a beta feature and is disabled by default.
+- id: ver-04
+  category: version_sensitive
+  split: test
+  question: Is in-place pod vertical scaling enabled by default, and what is its feature state?
+  evidence:
+  - document: concepts/workloads/autoscaling.md
+    version: release-1.36
+    quote: 'FEATURE STATE: Kubernetes v1.35 [stable] (enabled by default) As of Kubernetes 1.36, VPA does
+      not support resizing pods in-place, but this integration is being worked on. For manually resizing
+      pods in-place, see Resize Container Resources In-Place.'
+  reference_answer: Yes. It is a stable feature (since v1.35) that is enabled by default.
+- id: ver-05
+  category: version_sensitive
+  split: dev
+  question: Which openssl option does the Konnectivity setup use to create the server private key without
+    encrypting it?
+  evidence:
+  - document: tasks/extend-kubernetes/setup-konnectivity.md
+    version: release-1.36
+    quote: openssl req -subj "/CN=system:konnectivity-server" -new -newkey rsa:2048 -noenc -out konnectivity.csr
+      -keyout konnectivity.key
+  reference_answer: -noenc, in the command openssl req -subj "/CN=system:konnectivity-server" -new -newkey
+    rsa:2048 -noenc -out konnectivity.csr -keyout konnectivity.key.
+- id: ver-06
+  category: version_sensitive
+  split: test
+  question: Is the mixed version proxy a stable, beta or alpha feature, and is it enabled by default?
+  evidence:
+  - document: concepts/architecture/mixed-version-proxy.md
+    version: release-1.36
+    quote: 'FEATURE STATE: Kubernetes v1.36 [beta] (enabled by default) Kubernetes 1.36 includes a beta
+      feature that lets an API Server proxy resource requests to other peer API servers.'
+  reference_answer: It is a beta feature and it is enabled by default.
+- id: fol-01
+  category: follow_up
+  split: test
+  question: Can its Pods be launched all at once instead of one by one?
+  history:
+  - role: user
+    content: What is a StatefulSet?
+  - role: assistant
+    content: A StatefulSet manages a set of Pods and gives each of them a stable identity. By default
+      it creates and deletes its Pods one at a time, in order.
+  evidence:
+  - document: concepts/workloads/controllers/statefulset.md
+    version: release-1.36
+    quote: Parallel pod management tells the StatefulSet controller to launch or terminate all Pods in
+      parallel, and to not wait for Pods to become Running and Ready or completely terminated prior to
+      launching or terminating another Pod.
+  reference_answer: Yes. Parallel pod management tells the StatefulSet controller to launch or terminate
+    all Pods in parallel, without waiting for Pods to become Running and Ready or completely terminated
+    before launching or terminating another Pod.
+- id: fol-02
+  category: follow_up
+  split: test
+  question: The new version is crashing. How do I go back to revision 2 specifically?
+  history:
+  - role: user
+    content: I updated the image of my nginx-deployment and want to be able to undo it.
+  - role: assistant
+    content: A Deployment keeps its rollout history, so you can undo a rollout and return to the previous
+      revision.
+  evidence:
+  - document: concepts/workloads/controllers/deployment.md
+    version: release-1.36
+    quote: 'Alternatively, you can rollback to a specific revision by specifying it with --to-revision:
+      kubectl rollout undo deployment/nginx-deployment --to-revision=2'
+  reference_answer: Roll back to a specific revision with kubectl rollout undo deployment/nginx-deployment
+    --to-revision=2.
+- id: fol-03
+  category: follow_up
+  split: dev
+  question: What are the two forms of those heartbeats?
+  history:
+  - role: user
+    content: How does the control plane know that a node is still alive?
+  - role: assistant
+    content: The nodes send heartbeats, which help the cluster determine the availability of each node
+      and take action when failures are detected.
+  evidence:
+  - document: concepts/architecture/nodes.md
+    version: release-1.36
+    quote: 'For nodes there are two forms of heartbeats: - Updates to the .status of a Node. - Lease objects
+      within the kube-node-lease namespace. Each Node has an associated Lease object.'
+  reference_answer: Updates to the .status of a Node, and Lease objects within the kube-node-lease namespace
+    (each Node has an associated Lease object).
+- id: fol-04
+  category: follow_up
+  split: dev
+  question: Which of those effects also affects the Pods that are already running there?
+  history:
+  - role: user
+    content: How can I keep Pods away from a particular node?
+  - role: assistant
+    content: Taint the node. A taint has an effect, either NoSchedule, PreferNoSchedule or NoExecute,
+      and only Pods with a matching toleration are allowed to stay or to be scheduled there.
+  evidence:
+  - document: concepts/scheduling-eviction/taint-and-toleration.md
+    version: release-1.36
+    quote: 'NoExecute : This affects pods that are already running on the node as follows: - Pods that
+      do not tolerate the taint are evicted immediately - Pods that tolerate the taint without specifying
+      tolerationSeconds in their toleration specification remain bound forever - Pods that tolerate the
+      taint with a specified tolerationSeconds remain bound for the specified amount of time. After that
+      time elapses, the node lifecycle controller evicts the Pods from the node.'
+  reference_answer: NoExecute. Pods that do not tolerate the taint are evicted immediately, Pods that
+    tolerate it without tolerationSeconds remain bound forever, and Pods that tolerate it with tolerationSeconds
+    remain bound for that amount of time and are then evicted.
+- id: fol-05
+  category: follow_up
+  split: dev
+  question: What does the last one do?
+  history:
+  - role: user
+    content: Which types of Service are there?
+  - role: assistant
+    content: The types are ClusterIP, NodePort, LoadBalancer and ExternalName.
+  evidence:
+  - document: concepts/services-networking/service.md
+    version: release-1.36
+    quote: 'ExternalName : Maps the Service to the contents of the externalName field (for example, to
+      the hostname api.foo.bar.example). The mapping configures your cluster''s DNS server to return a
+      CNAME record with that external hostname value. No proxying of any kind is set up.'
+  reference_answer: ExternalName maps the Service to the contents of the externalName field, for example
+    a hostname. The mapping configures the cluster's DNS server to return a CNAME record with that external
+    hostname value, and no proxying of any kind is set up.
+- id: fol-06
+  category: follow_up
+  split: test
+  question: How do I make it run on only some of the nodes?
+  history:
+  - role: user
+    content: What is a DaemonSet?
+  - role: assistant
+    content: A DaemonSet makes sure that a copy of a Pod runs on the nodes of a cluster, for example a
+      logging agent that must run on every node.
+  evidence:
+  - document: concepts/workloads/controllers/daemonset.md
+    version: release-1.36
+    quote: If you specify a .spec.template.spec.nodeSelector, then the DaemonSet controller will create
+      Pods on nodes which match that node selector. Likewise if you specify a .spec.template.spec.affinity,
+      then DaemonSet controller will create Pods on nodes which match that node affinity.
+  reference_answer: Specify a .spec.template.spec.nodeSelector, so the DaemonSet controller creates Pods
+    only on nodes that match it, or a .spec.template.spec.affinity for a node affinity. Without either,
+    it creates Pods on all nodes.
+- id: una-01
+  category: unanswerable
+  split: test
+  question: What is the default value of the kube-scheduler --kube-api-qps flag?
+  reference_answer: The documents do not state the default value of the kube-scheduler --kube-api-qps
+    flag.
+- id: una-02
+  category: unanswerable
+  split: test
+  question: What is the default value of etcd's quota-backend-bytes setting?
+  reference_answer: The documents do not state the default of the etcd quota-backend-bytes setting.
+- id: una-03
+  category: unanswerable
+  split: dev
+  question: How do I configure Argo CD to automatically sync a Deployment from a Git repository?
+  reference_answer: The documents do not cover Argo CD.
+- id: una-04
+  category: unanswerable
+  split: dev
+  question: How do I install Linkerd and enable mutual TLS between my Pods?
+  reference_answer: The documents do not cover Linkerd.
+- id: una-05
+  category: unanswerable
+  split: test
+  question: How can I enable GPU time-slicing so that several Pods share one GPU?
+  reference_answer: The documents do not describe GPU time-slicing.
+- id: una-06
+  category: unanswerable
+  split: dev
+  question: What is the default value of the kube-proxy --conntrack-max-per-core flag?
+  reference_answer: The documents do not state the default of the kube-proxy --conntrack-max-per-core
+    flag.
