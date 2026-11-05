@@ -286,15 +286,19 @@ def finished(records: Sequence[QuestionRecord]) -> dict[str, Any]:
     API reported, and the provider models that answered."""
     effective: dict[str, Any] | None = None
     resolved: set[str] = set()
+    rerankers: set[str] = set()
     for r in records:
         debug = (r.response or {}).get("debug") or {}
         if effective is None and debug.get("config"):
             effective = debug["config"]
         resolved |= {c["resolved_model"] for c in debug.get("llm_calls", [])}
+        if debug.get("reranker"):
+            rerankers.add(debug["reranker"])
     return {
         "ended_at": now(),
         "requests": len(records),
         "errors": sum(r.error is not None for r in records),
         "effective_pipeline_config": effective,
         "resolved_models": sorted(resolved),
+        "rerankers": sorted(rerankers),
     }

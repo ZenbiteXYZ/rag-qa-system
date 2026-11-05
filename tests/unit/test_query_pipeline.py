@@ -207,6 +207,7 @@ async def test_rerank_reorders_and_keeps_top_n() -> None:
     assert [c.chunk_index for c in result.ranked] == [1, 2]
     assert [c.score for c in result.ranked] == [0.9, 0.5]
     assert reranker.calls[0][0] == "How do I drain a node?"
+    assert result.reranker == "fake:reranker"  # which reranker scored them is recorded
 
 
 async def test_context_respects_the_token_budget_in_rank_order() -> None:

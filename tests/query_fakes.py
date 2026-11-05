@@ -156,6 +156,8 @@ class FakeRetriever:
 
 
 class FakeReranker:
+    name = "fake:reranker"
+
     def __init__(self, scores: Sequence[float]) -> None:
         self.scores = list(scores)
         self.calls: list[tuple[str, list[str]]] = []

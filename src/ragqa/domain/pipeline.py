@@ -170,6 +170,7 @@ class PipelineState(_Model):
     candidates: tuple[RetrievedChunk, ...] = ()
     # rerank
     ranked: tuple[RetrievedChunk, ...] = ()
+    reranker: str | None = None  # which reranker scored them, for example "api:cohere/rerank-v3.5"
     # context
     context_chunks: tuple[RetrievedChunk, ...] = ()
     # generate

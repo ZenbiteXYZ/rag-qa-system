@@ -12,7 +12,7 @@ from ragqa.ingestion.chunkers import default_registry as default_chunkers
 from ragqa.ingestion.parsers import ParserRegistry
 from ragqa.ingestion.parsers import default_registry as default_parsers
 from ragqa.llm.client import ProxyLLMClient
-from ragqa.query.reranker import Reranker, TeiReranker
+from ragqa.query.reranker import Reranker, build_reranker
 from ragqa.query.retriever import QdrantRetriever
 from ragqa.settings import Settings
 from ragqa.storage.files.store import FileStore
@@ -63,9 +63,7 @@ class Backends:
             token_counter=token_counter,
             retriever=QdrantRetriever(chunk_store, embedder),
             llm=ProxyLLMClient.from_settings(settings),
-            reranker=(
-                TeiReranker(embedder_http, settings.reranker_url) if settings.reranker_url else None
-            ),
+            reranker=build_reranker(settings, embedder_http),
             _embedder_http=embedder_http,
         )
 

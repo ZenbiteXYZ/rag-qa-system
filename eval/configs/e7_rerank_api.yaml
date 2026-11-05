@@ -1,0 +1,11 @@
+# E7 with a hosted reranker (set RAGQA_RERANKER_KIND=api, see deploy/.env.example). Same stage config as e7_rerank.
+name: e7_rerank_api
+description: "E7 with a hosted reranker (OpenRouter cohere/rerank-v3.5): top 10 candidates down to 5."
+index: base
+pipeline: {rerank: {enabled: true, top_n: 5}}
+pins:
+  embedder: {model: Snowflake/snowflake-arctic-embed-m-v2.0, revision: 95c2741480856aa9666782eb4afe11959938017f}
+  generator: anthropic/claude-haiku-5.5-20261007
+  judge: openai/gpt-6-luna-20260922
+  images: {qdrant: "qdrant/qdrant:v1.19.2", tei: "text-embeddings-inference:cpu-1.9.4", litellm: "ghcr.io/berriai/litellm:v1.106.0"}
+  reranker: {model: cohere/rerank-v3.5, served_by: OpenRouter}

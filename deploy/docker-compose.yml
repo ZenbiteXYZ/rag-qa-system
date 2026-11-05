@@ -27,7 +27,13 @@ x-app-env: &app-env
   RAGQA_MLFLOW_EXPERIMENT: ragqa-traces
   RAGQA_TRACING_ENABLED: "true"
   RAGQA_FILES_DIR: /data/files
-  RAGQA_RERANKER_URL: http://tei-rerank:80
+  # Reranker (ADR-0023). Default: the local tei-rerank service (profile rerank). To use a hosted
+  # rerank API instead, set RAGQA_RERANKER_KIND=api, RAGQA_RERANKER_URL, RAGQA_RERANKER_MODEL and
+  # RAGQA_RERANKER_API_KEY in deploy/.env, and do not start the rerank profile.
+  RAGQA_RERANKER_KIND: ${RAGQA_RERANKER_KIND:-tei}
+  RAGQA_RERANKER_URL: ${RAGQA_RERANKER_URL:-http://tei-rerank:80}
+  RAGQA_RERANKER_MODEL: ${RAGQA_RERANKER_MODEL:-}
+  RAGQA_RERANKER_API_KEY: ${RAGQA_RERANKER_API_KEY:-}
   # Lets the evaluation runner read stage outputs from POST /query. Off unless set in deploy/.env.
   RAGQA_ALLOW_QUERY_DEBUG: ${RAGQA_ALLOW_QUERY_DEBUG:-false}
   RAGQA_ENV: ${RAGQA_ENV:-dev}

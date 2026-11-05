@@ -8,7 +8,7 @@ from ragqa.query.stages.common import base_query
 class RerankStage:
     name = "rerank"
     reads = ("question", "rewritten_query", "semantic_query", "candidates")
-    writes = ("ranked",)
+    writes = ("ranked", "reranker")
     optional = True
 
     def __init__(self, reranker: Reranker) -> None:
@@ -24,4 +24,4 @@ class RerankStage:
         order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
         top = order[: state.config.rerank.top_n]
         ranked = tuple(state.candidates[i].model_copy(update={"score": scores[i]}) for i in top)
-        return state.model_copy(update={"ranked": ranked})
+        return state.model_copy(update={"ranked": ranked, "reranker": self._reranker.name})

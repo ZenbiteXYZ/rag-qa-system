@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogFormat = Literal["json", "console"]
@@ -29,8 +29,14 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = "http://localhost:5000"
     files_dir: Path = Path("data/files")
 
-    # Reranker (ADR-0023). Unset means `rerank.enabled` is rejected on this deployment.
+    # Reranker (ADR-0023). Unset URL means `rerank.enabled` is rejected on this deployment.
+    # `tei`: a local Text Embeddings Inference cross-encoder at the URL. `api`: a hosted rerank
+    # API (OpenRouter `https://openrouter.ai/api/v1`, or the LiteLLM proxy `.../v1`) that needs
+    # `reranker_model` and, unless the proxy has no master key, `reranker_api_key`.
     reranker_url: str | None = None
+    reranker_kind: Literal["tei", "api"] = "tei"
+    reranker_model: str | None = None
+    reranker_api_key: SecretStr | None = None
     # `POST /query` may return the whole pipeline state (stage outputs, prompts, chunk texts)
     # when asked. The evaluation runner needs it; leave it off elsewhere.
     allow_query_debug: bool = False
@@ -68,6 +74,12 @@ class Settings(BaseSettings):
     # Maintenance loop in the worker: re-send stuck `queued` jobs and finish deletions.
     maintenance_interval_s: float = 30.0
     republish_after_s: float = 60.0
+
+    @model_validator(mode="after")
+    def _check_reranker(self) -> "Settings":
+        if self.reranker_kind == "api" and self.reranker_url and not self.reranker_model:
+            raise ValueError("RAGQA_RERANKER_MODEL is required when RAGQA_RERANKER_KIND=api")
+        return self
 
 
 @lru_cache
