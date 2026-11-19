@@ -47,7 +47,7 @@ Date of all records below: 2026-10-14.
 
 ## ADR-0007: Metadata schema
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Context:** Self-Query is only as useful as the metadata it can filter on, and the fields must be ones users mention in questions. Version fields are rarely mentioned and a wrong guess silently returns stale answers.
 - **Decision:**
   - Document level: `doc_type`, `tags`, `author`, `doc_date` (date stated by the content), `uploaded_at`, `language`.
