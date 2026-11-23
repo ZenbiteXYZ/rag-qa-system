@@ -221,3 +221,5 @@ __marimo__/
 
 # Evaluation run directories (generated, large). Calibration results stay tracked.
 eval/reports/*/
+
+.mcp.json
