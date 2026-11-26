@@ -30,7 +30,7 @@ from ragqa.storage.postgres.registry import Registry, Upload
 router = APIRouter(tags=["documents"])
 log = get_logger(__name__)
 
-FileField = Annotated[UploadFile, File(description="A .md or .docx file")]
+FileField = Annotated[UploadFile, File(description="A .md, .docx or .pdf file")]
 MetadataField = Annotated[
     str, Form(description="JSON: doc_type, tags, author, doc_date, language (all optional)")
 ]

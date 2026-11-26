@@ -5,7 +5,13 @@ import pytest
 from ragqa.domain.documents import ParsedDocument
 from ragqa.evaluation import text_sources
 from ragqa.ingestion.errors import UnsupportedFormatError
-from ragqa.ingestion.parsers import DocxParser, MarkdownParser, ParserRegistry, default_registry
+from ragqa.ingestion.parsers import (
+    DocxParser,
+    MarkdownParser,
+    ParserRegistry,
+    PdfParser,
+    default_registry,
+)
 
 
 class TxtParser:
@@ -21,12 +27,13 @@ def test_default_registry_resolves_by_extension_case_insensitively() -> None:
 
     assert isinstance(registry.for_filename("guide.MD"), MarkdownParser)
     assert isinstance(registry.for_filename("notes.docx"), DocxParser)
-    assert registry.extensions == (".docx", ".markdown", ".md")
+    assert isinstance(registry.for_filename("report.pdf"), PdfParser)
+    assert registry.extensions == (".docx", ".markdown", ".md", ".pdf")
 
 
-@pytest.mark.parametrize("name", ["report.pdf", "README"])
+@pytest.mark.parametrize("name", ["notes.rtf", "README"])
 def test_unknown_extension_is_rejected(name: str) -> None:
-    with pytest.raises(UnsupportedFormatError, match="supported: .docx, .markdown, .md"):
+    with pytest.raises(UnsupportedFormatError, match="supported: .docx, .markdown, .md, .pdf"):
         default_registry().for_filename(name)
 
 
@@ -56,5 +63,5 @@ def test_corpus_text_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(ValueError, match="outside"):
         text_sources.corpus_text("../../etc/passwd", "release-1.33")
     with pytest.raises(ValueError, match="no parser"):
-        (tmp_path / "release-1.33" / "x.pdf").write_bytes(b"%PDF")
-        text_sources.corpus_text("x.pdf", "release-1.33")
+        (tmp_path / "release-1.33" / "x.txt").write_bytes(b"plain")
+        text_sources.corpus_text("x.txt", "release-1.33")
