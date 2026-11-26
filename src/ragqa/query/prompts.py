@@ -3,9 +3,9 @@
 
 from collections.abc import Sequence
 
-from ragqa.domain.retrieval import RetrievedChunk
+from ragqa.domain.retrieval import MetadataFilter, RetrievedChunk
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
 
 # The generator is told to answer with exactly this sentence when the context is not enough,
 # so abstention can be detected without a judge (ML_DESIGN, abstention metric).
@@ -36,7 +36,7 @@ user's question, in the style of the documentation itself.
 - Write it as if it were true. Do not mention uncertainty or that you were asked a question."""
 
 GROUNDED_SYSTEM = f"""You answer questions about documentation using only the numbered \
-excerpts you are given.
+excerpts you are given. The filters below were applied when selecting the excerpts.
 - Cite the excerpts that support each statement with their numbers in square brackets, \
 for example [1] or [2][3].
 - Use only facts that the excerpts state. Do not use outside knowledge.
@@ -57,5 +57,12 @@ def format_context(chunks: Sequence[RetrievedChunk]) -> str:
     return "\n\n".join(blocks)
 
 
-def grounded_user_message(question: str, chunks: Sequence[RetrievedChunk]) -> str:
-    return f"Excerpts:\n\n{format_context(chunks)}\n\nQuestion: {question}"
+def grounded_user_message(
+    question: str, resolved_filters: MetadataFilter, chunks: Sequence[RetrievedChunk]
+) -> str:
+    notnull_filters = {k: v for k, v in resolved_filters.model_dump().items() if v}
+    return (
+        f"Excerpts:\n\n{format_context(chunks)}\n\n"
+        f"Filters: {notnull_filters if notnull_filters else 'No filters were applied'}\n\n"
+        f"Question: {question}"
+    )

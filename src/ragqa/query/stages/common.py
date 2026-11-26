@@ -44,3 +44,8 @@ def merge_filters(user: MetadataFilter, automatic: MetadataFilter | None) -> Met
     values = automatic.model_dump()
     values.update({k: v for k, v in user.model_dump().items() if v not in (None, ())})
     return MetadataFilter.model_validate(values)
+
+
+def effective_filters(state: PipelineState) -> MetadataFilter:
+    """What retrieval actually filtered on: user filters win over Self-Query's, field by field."""
+    return merge_filters(state.user_filters, state.resolved_filters)

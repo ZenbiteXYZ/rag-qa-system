@@ -3,7 +3,7 @@
 from ragqa.domain.pipeline import PipelineConfig, PipelineState
 from ragqa.domain.retrieval import RetrievalQuery
 from ragqa.query.retriever import Retriever
-from ragqa.query.stages.common import base_query, merge_filters
+from ragqa.query.stages.common import base_query, effective_filters
 
 
 class RetrieveStage:
@@ -35,7 +35,7 @@ class RetrieveStage:
             # The dense branch may use the HyDE text, the sparse branch never does.
             dense_text=state.hypothetical_document or text,
             sparse_text=text,
-            filters=merge_filters(state.user_filters, state.resolved_filters),
+            filters=effective_filters(state),
             version=state.version,
             branch_limit=config.branch_limit,
             top_k=config.top_k,

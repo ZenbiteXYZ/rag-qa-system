@@ -9,7 +9,7 @@ from ragqa.domain.pipeline import Citation, PipelineConfig, PipelineState
 from ragqa.domain.retrieval import RetrievedChunk
 from ragqa.llm.types import Completion, LLMClient, TextDelta
 from ragqa.query import prompts
-from ragqa.query.stages.common import model_for, recent_text_turns, with_call
+from ragqa.query.stages.common import effective_filters, model_for, recent_text_turns, with_call
 
 _CITATION = re.compile(r"\[(\d+)\]")
 _QUOTE_CHARS = 300
@@ -58,7 +58,9 @@ class GenerateStage:
         user = (
             state.question
             if closed_book
-            else prompts.grounded_user_message(state.question, state.context_chunks)
+            else prompts.grounded_user_message(
+                state.question, effective_filters(state), state.context_chunks
+            )
         )
         system = prompts.CLOSED_BOOK_SYSTEM if closed_book else prompts.GROUNDED_SYSTEM
         messages = [
