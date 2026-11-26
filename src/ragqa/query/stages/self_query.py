@@ -75,7 +75,7 @@ class SelfQueryStage:
             ],
             SelfQueryOutput,
             model=model_for(config.model, state),
-            max_tokens=400,
+            max_tokens=1500,
             reasoning_effort=state.config.reasoning_effort,
         )
         extracted = output.filters

@@ -291,7 +291,7 @@ services:
 
   alloy:
     profiles: [obs]
-    image: grafana/alloy:v1.21.0
+    image: grafana/alloy:v1.22.0
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -299,10 +299,14 @@ services:
       - /etc/alloy/config.alloy
     volumes:
       - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro,z
-      # Read-only, but access to the Docker socket is still root-equivalent on the host.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Socket of the container daemon, Docker or podman. Inside the container it is always
+      # mounted at the canonical path, so the Alloy config stays engine-agnostic. Under
+      # rootless podman: CONTAINER_SOCKET=/run/user/<uid>/podman/podman.sock, after
+      # `systemctl --user start podman.socket`.
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro,z
       - alloy_data:/var/lib/alloy/data
-    # SELinux blocks containers from the Docker socket; disable labeling for this one.
+    # SELinux blocks containers from the socket; disable labeling for this one.
+    # `label=disable` is understood by both Docker and podman.
     security_opt:
       - label=disable
     ports:

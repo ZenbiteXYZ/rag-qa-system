@@ -5,17 +5,31 @@
 discovery.docker "containers" {
   host = "unix:///var/run/docker.sock"
 
+  // Docker compose labels containers com.docker.compose.*, podman-compose
+  // io.podman.compose.*. Either label marks this project (values are OR-ed).
   filter {
     name   = "label"
-    values = ["com.docker.compose.project=ragqa"]
+    values = [
+      "com.docker.compose.project=ragqa",
+      "io.podman.compose.project=ragqa",
+    ]
   }
 }
 
 discovery.relabel "containers" {
   targets = []
 
+  // The engines name the service label differently; a rule whose source label is
+  // missing must not match (regex .+, not the default .*), or it would blank the label.
   rule {
     source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_io_podman_compose_service"]
+    regex         = "(.+)"
     target_label  = "service"
   }
 
