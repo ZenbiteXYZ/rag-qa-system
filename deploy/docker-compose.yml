@@ -202,6 +202,15 @@ services:
       - --model-id=Snowflake/snowflake-arctic-embed-m-v2.0
       - --revision=95c2741480856aa9666782eb4afe11959938017f
       - --port=80
+      - --tokenization-workers=2
+      - --max-concurrent-requests=64
+      - --max-batch-tokens=2048
+    # Match the OMP pool to the quota, instead of one thread per core.
+    environment:
+      - OMP_NUM_THREADS=4
+    # Hard ceiling: an OOM lands inside the container, never on the host.
+    cpus: 4
+    mem_limit: 3g
     volumes:
       - tei_models:/data
     ports:
@@ -217,6 +226,13 @@ services:
       - --model-id=BAAI/bge-reranker-v2-m3
       - --revision=953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
       - --port=80
+      - --tokenization-workers=2
+      - --max-concurrent-requests=64
+      - --max-batch-tokens=2048
+    environment:
+      - OMP_NUM_THREADS=4
+    cpus: 4
+    mem_limit: 4g
     volumes:
       - tei_rerank_models:/data
     ports:
