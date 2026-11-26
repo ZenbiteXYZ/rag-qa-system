@@ -164,6 +164,7 @@ Date of all records below: 2026-10-14.
   - **Metrics:** `prometheus-client` on the API (`/metrics`) and on the worker (port 9100). Prometheus also scrapes Qdrant, RabbitMQ and TEI. Grafana has provisioned datasources and one operations dashboard.
   - **Compose profiles:** the default set is Postgres, Qdrant, RabbitMQ, MLflow, API and worker. `ml` adds TEI and LiteLLM, `obs` adds Prometheus, Loki, Alloy and Grafana.
 - **Consequences:** Supersedes the deferral in ADR-0015. Four more services with the `obs` profile and their volumes. Alloy needs the Docker socket read-only and SELinux labeling disabled for that container, which gives it access to the Docker API. MLflow and LiteLLM are not scraped for metrics yet. Tracing is off unless `RAGQA_TRACING_ENABLED` is set.
+- **Amendment (engine-agnostic socket, 2026-11-27):** the Alloy container mounts the container daemon's socket from `CONTAINER_SOCKET` (default `/var/run/docker.sock`), so podman works by pointing it at its Docker-compatible socket (`/run/user/<uid>/podman/podman.sock` for rootless). Inside the container the socket always sits at `/var/run/docker.sock`, so the Alloy config needs no host change; its project filter matches the compose label of either engine (`com.docker.compose.project` or `io.podman.compose.project`).
 
 ## ADR-0021: Document model: one normalized text with spans, formats through a parser registry
 
